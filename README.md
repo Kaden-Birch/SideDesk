@@ -1,6 +1,6 @@
 # SideDesk
 
-Self-hosted, single-owner freelance IT management. This repository implements the Milestone 0 foundation and a Milestone 1 candidate: clients/contacts/contextual notes, quick activities, manual time, persistent timer, and a browser-encrypted credential vault with recovery, custom fields and TOTP.
+Self-hosted, single-owner freelance IT management. [Validated milestone checklist](docs/milestone-1-checklist.md). This repository implements the Milestone 0 foundation and Milestone 1: clients/contacts/contextual notes, quick activities, manual time, persistent timer, and a browser-encrypted credential vault with recovery, custom fields and TOTP.
 
 **Do not enter actual client credentials until an independent security/cryptographic review is complete.** Tests do not constitute an audit. Ordinary HTTP use is supported; vault features fail closed when secure browser APIs are unavailable. A VPN does not replace TLS or protect against malicious JavaScript from a compromised host.
 

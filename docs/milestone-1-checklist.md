@@ -1,6 +1,6 @@
 # Milestone 0 + 1 acceptance checklist
 
-Status: validation candidate. Do not mark complete before all applicable CI jobs pass on the delivered commit. Independent review before real client credentials remains a separate release gate.
+Status: functional Milestone 0 foundation and Milestone 1 complete. Independent review before real client credentials remains a separate release gate.
 
 ## Functional demo
 
@@ -28,4 +28,10 @@ Status: validation candidate. Do not mark complete before all applicable CI jobs
 
 No jobs, quotes/invoices, PDF billing, payments, SMTP, inventory, expenses or reports are implemented. Time/rate/rounding snapshots exist; invoice application comes in M2. No automatic off-host backups/retention or user-facing master-key rotation. No independent crypto audit has been obtained. Audit of browser reveal/copy is best effort.
 
-At handoff, record actual result counts and a verified GitHub Actions link here. Stop after M1; M2 needs the user's confirmation.
+## Recorded validation — 23 October 2026
+
+Application commit `6ddb0cf` passed [GitHub Actions run 39988368389](https://github.com/Kaden-Birch/SideDesk/actions/runs/39988368389): both `verify` and `docker` succeeded on Linux/Node 24. The suite contains 24 passing unit/cryptographic/PostgreSQL tests and three passing production-browser workflows. Browser checks include light/dark axe accessibility, phone overflow, separate vault unlock, recovery/rewrap, idle and broadcast lock, clipboard denial, no unexpected API 5xx, and ordinary HTTP activity/timer operation with vault restrictions.
+
+Docker evidence includes fresh image build, migrations, owner onboarding, ciphertext-only credential upload, consistent database/files backup, checksum verification, fresh database restore, file restoration, restored session revocation, login and recovery-key decryption of a restored fictional credential. Local Node 25/macOS checks also passed: clean npm install, typecheck, lint, formatting, production build, 24 tests and three browser workflows. Desktop light/dark and phone screenshots were visually inspected.
+
+The final handoff changes documentation and the footer disclosure; main receives the same CI gates. No real client secrets or independent-audit claim are included. Stop after M1; M2 needs the user's confirmation.

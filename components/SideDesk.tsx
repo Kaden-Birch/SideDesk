@@ -1468,9 +1468,7 @@ export default function SideDesk() {
         </main>
         <footer className="app-footer">
           SideDesk · Your independent workspace{" "}
-          <span>
-            Milestone 1 candidate · Security review required for real secrets
-          </span>
+          <span>Credential vault: independent security review required</span>
         </footer>
       </div>
       {toast && (
