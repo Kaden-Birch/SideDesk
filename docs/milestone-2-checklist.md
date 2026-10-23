@@ -24,3 +24,11 @@ Run `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test`, `np
 PDF fixtures cover Letter and six-page A4 with visual review of every page. Browser checks include light/dark axe scans, phone overflow, draft repeat saves, file downloads, exact cents, immutable PDFs, payments and ordinary HTTP restrictions. Database tests cover allocation/number/payment races, immutable records and renderer rollback. Original vault tests remain enabled.
 
 No quotes, SMTP, automatic tax rules, credits/refunds, expenses/travel, stock/assets or comprehensive reports yet. Logo upload, partial source allocation and off-host scheduled backup are unavailable. Ordinary files are not encrypted vault attachments. M1 → M2 migration is non-destructive; code downgrade is unsupported. Restore a compatible backup into a fresh deployment for rollback.
+
+## Recorded validation — 23 October 2026
+
+Application commit `9f2c18e` passed 43 local unit/cryptographic/PostgreSQL/PDF/seed tests and all five production-browser workflows. Clean dependency installation, typecheck, lint, formatting and production build passed on macOS/Node 25. Every page of the Letter and six-page A4 PDF fixtures was rendered with Poppler and visually checked; desktop light/dark and 390 px invoice screenshots were inspected. Both invoice themes passed axe scans and phone overflow checks.
+
+The [Docker gate](https://github.com/Kaden-Birch/SideDesk/actions/runs/40018224620/job/120635721494) passed on Linux/Node 24: fresh image build, all migrations, job/rate/time allocation, issued PDF and partial receipt, consistent backup and manifest, fresh database/files restore, exact issued PDF bytes, outstanding balance, unbilled reservation, authenticated job-file download and restored vault recovery/decryption. Main runs the same verify and Docker gates; final CI status is reported in the handoff.
+
+Milestone 3 requires a new user confirmation. No quotes, SMTP or expense features have been started.
