@@ -32,3 +32,5 @@ Application commit `9f2c18e` passed 43 local unit/cryptographic/PostgreSQL/PDF/s
 The [Docker gate](https://github.com/Kaden-Birch/SideDesk/actions/runs/40018224620/job/120635721494) passed on Linux/Node 24: fresh image build, all migrations, job/rate/time allocation, issued PDF and partial receipt, consistent backup and manifest, fresh database/files restore, exact issued PDF bytes, outstanding balance, unbilled reservation, authenticated job-file download and restored vault recovery/decryption. Main runs the same verify and Docker gates; final CI status is reported in the handoff.
 
 Milestone 3 requires a new user confirmation. No quotes, SMTP or expense features have been started.
+
+The full [candidate CI run](https://github.com/Kaden-Birch/SideDesk/actions/runs/40018224620) passed both gates. Linux/Node 24 verified all 43 tests, production build and all five browser workflows. The initial verify attempt was cancelled during a slow Ubuntu package download; an unchanged full retry passed. No tests or vault controls were disabled.
