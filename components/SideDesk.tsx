@@ -304,8 +304,10 @@ export default function SideDesk() {
       };
       await request(state?.initialized ? "login" : "setup", "POST", body);
       e.currentTarget?.reset();
-      await refresh();
+      // Choose the landing page before refresh exposes the authenticated UI.
+      // A slower data response must not overwrite navigation made after login.
       navigate("dashboard");
+      await refresh();
       notify(
         state?.initialized
           ? "Signed in. Vault remains locked."

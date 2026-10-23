@@ -350,6 +350,15 @@ test.describe.serial("Milestone 0 and 1 acceptance", () => {
   test("non-loopback HTTP keeps ordinary work usable and disables vault without downgrade", async ({
     page,
   }) => {
+    const clientResponse = Promise.withResolvers<void>();
+    await page.route(
+      "**/api/clients",
+      async (route) => {
+        await clientResponse.promise;
+        await route.continue();
+      },
+      { times: 1 },
+    );
     await page.goto("http://sidedesk.test:3101");
     await page.getByLabel("Login name").fill(account.name);
     await page
@@ -361,6 +370,7 @@ test.describe.serial("Milestone 0 and 1 acceptance", () => {
     ).toBeVisible();
     expect(await page.evaluate(() => isSecureContext)).toBe(false);
     await page.getByRole("button", { name: "Clients", exact: true }).click();
+    clientResponse.resolve();
     await expect(
       page.getByRole("button", { name: "Prairie Demo Studio", exact: true }),
     ).toBeVisible();
