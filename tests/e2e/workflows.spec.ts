@@ -409,4 +409,263 @@ test.describe.serial("Milestone 0 and 1 acceptance", () => {
     ).toHaveCount(0);
     await expect(page.getByText("Demo router", { exact: true })).toBeVisible();
   });
+  test("Milestone 2 jobs, entry review, invoice editor, PDF snapshots and partial/full payments", async ({
+    page,
+  }) => {
+    await login(page);
+    await page.getByRole("button", { name: "Work", exact: true }).click();
+    await page.getByRole("button", { name: "Jobs", exact: true }).click();
+    await page.getByRole("button", { name: "+ New job", exact: true }).click();
+    await page.getByLabel("Job title", { exact: true }).fill("Network refresh");
+    await page
+      .getByLabel("Description / scope")
+      .fill("Fictional office network configuration and handover.");
+    await page
+      .getByLabel("Job hourly rate override (CAD)", { exact: true })
+      .fill("180");
+    await page.getByRole("button", { name: "Save job", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Network refresh", exact: true }),
+    ).toBeVisible();
+    await page.getByLabel("Upload job file").setInputFiles({
+      name: "fictional-handover.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("Fictional network handover"),
+    });
+    const attachment = page.getByRole("link", {
+      name: "fictional-handover.txt",
+      exact: true,
+    });
+    await expect(attachment).toBeVisible();
+    const file = await page.request.get(
+      (await attachment.getAttribute("href"))!,
+    );
+    expect(file.headers()["content-type"]).toBe("application/octet-stream");
+    expect(await file.text()).toBe("Fictional network handover");
+    await page
+      .getByRole("button", { name: "+ Log activity for job", exact: true })
+      .click();
+    await page.getByLabel("Activity title").fill("Configure office network");
+    await page
+      .getByLabel("Manual duration (minutes)", { exact: true })
+      .fill("25");
+    await page
+      .getByRole("dialog")
+      .getByLabel("Notes", { exact: true })
+      .fill("Activity description retained");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByLabel("Description / notes")).toHaveValue(
+      "Activity description retained",
+    );
+    await expect(page.getByRole("cell", { name: /180.00\/h/ })).toBeVisible();
+    await page.getByRole("button", { name: "Sales", exact: true }).click();
+    await page.getByRole("tab", { name: "Unbilled work", exact: true }).click();
+    const row = page
+      .getByRole("row")
+      .filter({ hasText: "Configure office network" });
+    await row
+      .getByRole("button", { name: "Review billing", exact: true })
+      .click();
+    await page
+      .getByLabel("Entry hourly rate override (CAD)", { exact: true })
+      .fill("195");
+    await page
+      .getByLabel("Billing correction reason")
+      .fill("Agreed site rate for this entry");
+    await page
+      .getByRole("button", { name: "Save billing review", exact: true })
+      .click();
+    await expect(row).toContainText("$195.00");
+    await row.getByRole("checkbox").check();
+    await page
+      .getByRole("button", { name: "Create draft (1 entries)", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Draft invoice", exact: true }),
+    ).toBeVisible();
+    const draftURL = page.url();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByLabel("Enable tax rates on invoice lines").check();
+    await page
+      .getByRole("button", { name: "Save settings", exact: true })
+      .click();
+    await expect(page.getByRole("status")).toContainText("Settings saved");
+    await page.getByLabel("Legal / issuer name").fill("Fictional IT Studio");
+    await page
+      .getByLabel("Issuer address")
+      .fill("100 Fictional Street, Edmonton, AB");
+    await page
+      .getByLabel("Payment instructions", { exact: true })
+      .fill("Fictional e-transfer instructions.");
+    await page
+      .getByRole("button", { name: "Save invoice identity", exact: true })
+      .click();
+    await expect(page.getByRole("status")).toContainText("Invoice identity");
+    await page.goto(draftURL);
+    await page.getByLabel("Line 1 tax (%)", { exact: true }).fill("5");
+    await page
+      .getByLabel("Line 1 tax label", { exact: true })
+      .fill("Configured tax");
+    await page
+      .getByRole("button", { name: "Add manual line", exact: true })
+      .click();
+    await page
+      .getByLabel("Line 2 description", { exact: true })
+      .fill("Fictional configured device supply");
+    await page.getByLabel("Line 2 quantity", { exact: true }).fill("1.125");
+    await page
+      .getByLabel("Line 2 unit rate (CAD)", { exact: true })
+      .fill("19.99");
+    await page.getByLabel("Line 2 discount (%)", { exact: true }).fill("7.5");
+    await page.getByLabel("Line 2 tax (%)", { exact: true }).fill("5");
+    await page
+      .getByLabel("Line 2 tax label", { exact: true })
+      .fill("Configured tax");
+    await page
+      .getByLabel("Customer-visible notes")
+      .fill("Thank you - fictional demonstration.");
+    await page.getByRole("button", { name: "Save draft", exact: true }).click();
+    await expect(page.locator(".invoice-summary .grand")).toContainText(
+      "$124.22",
+    );
+    await page.getByRole("button", { name: "Save draft", exact: true }).click();
+    await expect(page.locator(".invoice-summary .grand")).toContainText(
+      "$124.22",
+    );
+    await page.getByLabel("Theme", { exact: true }).selectOption("dark");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement)?.blur();
+      window.scrollTo(0, 0);
+    });
+    await page.screenshot({
+      path: "test-results/invoice-draft-dark.png",
+      fullPage: true,
+    });
+    await page.getByLabel("Theme", { exact: true }).selectOption("light");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement)?.blur();
+      window.scrollTo(0, 0);
+    });
+    await page.screenshot({
+      path: "test-results/invoice-draft-phone.png",
+      fullPage: true,
+    });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const preview = await page.request.get(
+      (await page
+        .getByRole("link", { name: "Preview PDF", exact: true })
+        .getAttribute("href"))!,
+    );
+    expect(preview.ok()).toBe(true);
+    expect((await preview.body()).subarray(0, 5).toString()).toBe("%PDF-");
+    page.once("dialog", (d) => d.accept());
+    await page
+      .getByRole("button", { name: "Issue invoice", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "INV-000001", exact: true }),
+    ).toBeVisible();
+    const pdfURL = (await page
+      .getByRole("link", { name: "Download original PDF", exact: true })
+      .getAttribute("href"))!;
+    const original = await (await page.request.get(pdfURL)).body();
+    await page
+      .getByRole("button", { name: "Record payment", exact: true })
+      .click();
+    await page.getByLabel("Payment amount (CAD)", { exact: true }).fill("50");
+    await page
+      .getByLabel("Payment reference")
+      .fill("Fictional partial receipt");
+    await page
+      .getByRole("button", { name: "Save payment", exact: true })
+      .click();
+    await expect(page.locator(".invoice-summary .balance")).toContainText(
+      "$74.22",
+    );
+    expect(
+      (await (await page.request.get(pdfURL)).body()).equals(original),
+    ).toBe(true);
+    await page
+      .getByRole("button", { name: "Record payment", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Save payment", exact: true })
+      .click();
+    await expect(page.locator(".invoice-summary .balance")).toContainText(
+      "$0.00",
+    );
+    expect(
+      (await (await page.request.get(pdfURL)).body()).equals(original),
+    ).toBe(true);
+    await page.screenshot({
+      path: "test-results/invoice-issued-light.png",
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Sales", exact: true }).click();
+    await page.getByRole("tab", { name: "Unbilled work", exact: true }).click();
+    await expect(
+      page.getByRole("row").filter({ hasText: "Configure office network" }),
+    ).toHaveCount(0);
+    await page.getByRole("tab", { name: "Payments", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "INV-000001", exact: true }),
+    ).toHaveCount(2);
+  });
+  test("Milestone 2 invoicing and PDF downloads work over ordinary HTTP while the vault stays blocked", async ({
+    page,
+  }) => {
+    await page.goto("http://sidedesk.test:3101");
+    await page.getByLabel("Login name").fill(account.name);
+    await page
+      .getByLabel("Login password", { exact: true })
+      .fill(account.password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("button", { name: "Sales", exact: true }).click();
+    await page
+      .getByRole("button", { name: "+ New invoice", exact: true })
+      .click();
+    await page
+      .getByLabel("Line 1 description", { exact: true })
+      .fill("Fictional HTTP service");
+    await page.getByLabel("Line 1 unit rate (CAD)", { exact: true }).fill("80");
+    await page.getByRole("button", { name: "Save draft", exact: true }).click();
+    await expect(page.locator(".invoice-summary .grand")).toContainText(
+      "$80.00",
+    );
+    page.once("dialog", (d) => d.accept());
+    await page
+      .getByRole("button", { name: "Issue invoice", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "INV-000002", exact: true }),
+    ).toBeVisible();
+    const url = (await page
+      .getByRole("link", { name: "Download original PDF", exact: true })
+      .getAttribute("href"))!;
+    expect(
+      await page.evaluate(async (path) => {
+        const response = await fetch(path);
+        if (!response.ok) throw new Error(`PDF returned ${response.status}`);
+        return new TextDecoder().decode(
+          (await response.arrayBuffer()).slice(0, 5),
+        );
+      }, url),
+    ).toBe("%PDF-");
+    await page
+      .getByRole("button", { name: "Credentials", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", {
+        name: "Vault unavailable in this browser context",
+      }),
+    ).toBeVisible();
+  });
 });

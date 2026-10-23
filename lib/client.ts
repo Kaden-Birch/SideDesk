@@ -46,6 +46,15 @@ export type Settings = {
   vault_idle_minutes: number;
   https_dismissed: boolean;
   version: number;
+  legal_name: string;
+  address: string;
+  email: string;
+  phone: string;
+  registration_number: string;
+  payment_instructions: string;
+  invoice_terms: string;
+  rounding_scope: "entry" | "group";
+  accent_color: string;
 };
 export type Client = {
   id: string;
@@ -61,6 +70,7 @@ export type Activity = {
   id: string;
   client_id: string;
   client_name: string;
+  job_id: string | null;
   title: string;
   billable: boolean;
   status: "open" | "completed" | "cancelled";
@@ -103,4 +113,23 @@ export const duration = (s: number) =>
 
 export async function requestKey() {
   return (await request<{ id: string }>("request-key")).id;
+}
+
+export async function uploadJobFile(jobId: string, file: File) {
+  const r = await fetch(`/api/jobs/${jobId}/files`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "content-type": "application/octet-stream",
+      "x-csrf-token": csrfToken,
+      "x-file-name": encodeURIComponent(file.name),
+    },
+    body: file,
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    if (r.status === 401) window.dispatchEvent(new Event("sidedesk-expired"));
+    throw new ApiError(r.status, data.error || "Upload failed");
+  }
+  return data;
 }

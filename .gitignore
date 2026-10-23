@@ -6,6 +6,6 @@ node_modules/
 playwright-report/
 test-results/
 coverage/
-work/
+/work/
 *.tsbuildinfo
 backups/

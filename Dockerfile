@@ -17,8 +17,11 @@ COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/tsconfig.json ./tsconfig.json
 COPY --from=build --chown=node:node /app/db ./db
 COPY --from=build --chown=node:node /app/lib ./lib
+COPY --from=build --chown=node:node /app/features ./features
 COPY --from=build --chown=node:node /app/scripts ./scripts
 RUN mkdir -p /data/uploads /data/backups && chown -R node:node /data
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright install --with-deps chromium && chmod -R a+rX /ms-playwright
 USER node
 EXPOSE 3000
 CMD ["node", "server.js"]

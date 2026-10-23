@@ -50,6 +50,7 @@ async function call<T>(
       cookie,
       "x-csrf-token": csrf,
       "content-type": "application/json",
+      "idempotency-key": randomUUID(),
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
@@ -74,6 +75,46 @@ const client = await call<{ id: string }>("clients", "POST", {
   name: "Docker restore fixture",
   type: "business",
 });
+// M2: a real job, rate snapshot, full time allocation, issued PDF and partial payment.
+const job = await call<{ id: string }>("jobs", "POST", {
+  client_id: client.id,
+  title: "Docker job fixture",
+  hourly_rate_minor: 18000,
+});
+const activity = await call<{ id: string }>("activities", "POST", {
+  client_id: client.id,
+  job_id: job.id,
+  title: "Docker billable activity",
+  billable: true,
+  duration_seconds: 1500,
+});
+const time = await call<{ entries: { id: string }[] }>(
+  "activities/" + activity.id,
+);
+const invoice = await call<{ id: string }>("invoices/from-time", "POST", {
+  client_id: client.id,
+  source_ids: time.entries.map((e) => e.id),
+});
+const draft = await call<{ version: number }>("invoices/" + invoice.id);
+await call("invoices/" + invoice.id + "/issue", "POST", {
+  version: draft.version,
+});
+await call("invoices/" + invoice.id + "/payments", "POST", {
+  amount_minor: 3000,
+  method: "e_transfer",
+  received_on: "2026-10-23",
+  reference: "Fictional Docker receipt",
+});
+async function pdfBytes() {
+  const r = await fetch(
+    "http://localhost:3000/api/invoices/" + invoice.id + "/pdf",
+    { headers: { cookie } },
+  );
+  assert.ok(r.ok);
+  return Buffer.from(await r.arrayBuffer());
+}
+const originalPDF = await pdfBytes();
+assert.equal(originalPDF.subarray(0, 5).toString(), "%PDF-");
 Object.defineProperty(globalThis, "isSecureContext", {
   value: true,
   configurable: true,
@@ -97,15 +138,22 @@ await call("credentials", "POST", {
   version: 0,
 });
 init.vmk.fill(0);
-await docker([
-  "compose",
-  "exec",
-  "-T",
-  "app",
-  "node",
-  "-e",
-  "require('fs').writeFileSync('/data/uploads/restore-fixture.txt','fictional upload fixture')",
-]);
+const fileResponse = await fetch(
+  `http://localhost:3000/api/jobs/${job.id}/files`,
+  {
+    method: "POST",
+    headers: {
+      cookie,
+      origin: "http://localhost:3000",
+      "x-csrf-token": csrf,
+      "content-type": "application/octet-stream",
+      "x-file-name": "restore-fixture.txt",
+    },
+    body: "fictional upload fixture",
+  },
+);
+assert.equal(fileResponse.status, 201);
+const jobFile = (await fileResponse.json()) as { id: string };
 await call("backup", "POST", {});
 const backupDir = (
   await docker(
@@ -209,7 +257,7 @@ await docker([
   "app",
   "node",
   "-e",
-  `const f=require('fs');for(const x of f.readdirSync('/data/uploads'))f.rmSync('/data/uploads/'+x,{recursive:true,force:true});f.cpSync(process.argv[1]+'/uploads','/data/uploads',{recursive:true});if(f.readFileSync('/data/uploads/restore-fixture.txt','utf8')!=='fictional upload fixture')throw Error('file restore mismatch');`,
+  `const f=require('fs');for(const x of f.readdirSync('/data/uploads'))f.rmSync('/data/uploads/'+x,{recursive:true,force:true});f.cpSync(process.argv[1]+'/uploads','/data/uploads',{recursive:true});`,
   backupDir,
 ]);
 await writeFile(
@@ -245,6 +293,26 @@ assert.equal(
   (await call<{ name: string }[]>("clients"))[0].name,
   "Docker restore fixture",
 );
+const restoredInvoice = await call<{
+  total_minor: number;
+  balance_minor: number;
+}>("invoices/" + invoice.id);
+assert.equal(restoredInvoice.total_minor, 9000);
+assert.equal(restoredInvoice.balance_minor, 6000);
+assert.equal((await pdfBytes()).equals(originalPDF), true);
+assert.equal(
+  (await call<{ id: string }[]>("unbilled")).some(
+    (e) => e.id === time.entries[0].id,
+  ),
+  false,
+);
+assert.equal((await call<{ id: string }>("jobs/" + job.id)).id, job.id);
+const restoredFile = await fetch(
+  `http://localhost:3000/api/jobs/${job.id}/files/${jobFile.id}`,
+  { headers: { cookie } },
+);
+assert.equal(restoredFile.status, 200);
+assert.equal(await restoredFile.text(), "fictional upload fixture");
 console.log(
-  "Docker fresh-build, migrations, owner setup, ciphertext backup, manifest, fresh database/file restore, login and vault recovery/decryption passed.",
+  "Docker fresh build, migration, jobs, invoice/PDF/payment allocations, consistent backup, fresh database/file restore, immutable PDF and vault recovery passed.",
 );

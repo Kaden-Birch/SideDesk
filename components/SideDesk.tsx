@@ -16,6 +16,15 @@ import {
   type Settings,
 } from "@/lib/client";
 import { Dialog, Empty, Field, Tag } from "./ui";
+import SalesPanel, {
+  TimeReviewDialog,
+  ClientBillingLinks,
+  BillingOverview,
+} from "@/features/billing/SalesPanel";
+import JobsPanel from "@/features/jobs/JobsPanel";
+import BusinessProfile from "@/features/billing/BusinessProfile";
+import { parseDecimal } from "@/features/billing/money";
+import type { Job } from "@/features/billing/model";
 const VaultPanel = dynamic(() => import("./VaultPanel"), {
   ssr: false,
   loading: () => <p role="status">Loading vault…</p>,
@@ -33,7 +42,8 @@ type Detail = Client & {
   activities: Activity[];
   credentials: CredentialMeta[];
 };
-type ActivityDetail = Activity & {
+type ActivityDetail = Omit<Activity, "notes"> & {
+  activity_notes: string;
   notes: Note[];
   entries: {
     id: string;
@@ -42,6 +52,9 @@ type ActivityDetail = Activity & {
     billable: boolean;
     rate_minor: string;
     rounding_minutes: number;
+    rounding_scope: string;
+    allocated: boolean;
+    version: number;
     created_at: string;
   }[];
 };
@@ -55,6 +68,12 @@ export default function SideDesk() {
   const [state, setState] = useState<State | null>(null),
     [clients, setClients] = useState<Client[]>([]),
     [activities, setActivities] = useState<Activity[]>([]),
+    [jobs, setJobs] = useState<Job[]>([]),
+    [suggestedJob, setSuggestedJob] = useState<Job | null>(null),
+    [draftClient, setDraftClient] = useState(""),
+    [reviewTime, setReviewTime] = useState<
+      ActivityDetail["entries"][number] | null
+    >(null),
     [timer, setTimer] = useState<Timer | null>(null),
     [offset, setOffset] = useState(0),
     [now, setNow] = useState(() => Date.now()),
@@ -110,11 +129,13 @@ export default function SideDesk() {
     setCsrf(s.csrf);
     setState(s);
     if (s.authenticated) {
-      const [c, a, t] = await Promise.all([
+      const [c, a, t, j] = await Promise.all([
         request<Client[]>("clients"),
         request<Activity[]>("activities"),
         request<{ timer: Timer | null; server_now: string }>("timer"),
+        request<Job[]>("jobs"),
       ]);
+      setJobs(j);
       setClients(c);
       setActivities(a);
       setTimer(t.timer);
@@ -152,7 +173,15 @@ export default function SideDesk() {
       const q = new URLSearchParams(location.search);
       const v = q.get("view") || "dashboard";
       setView(
-        ["dashboard", "clients", "work", "credentials", "settings"].includes(v)
+        [
+          "dashboard",
+          "clients",
+          "work",
+          "jobs",
+          "sales",
+          "credentials",
+          "settings",
+        ].includes(v)
           ? v
           : "dashboard",
       );
@@ -168,6 +197,8 @@ export default function SideDesk() {
       setState((s) => (s ? { ...s, authenticated: false } : s));
       setClients([]);
       setActivities([]);
+      setJobs([]);
+      setReviewTime(null);
       setDetail(null);
       setActivityDetail(null);
       setTimer(null);
@@ -261,7 +292,7 @@ export default function SideDesk() {
               setup_token: value(fd, "setup_token"),
               name: value(fd, "name"),
               timezone: value(fd, "timezone"),
-              hourly_rate_minor: Math.round(number(fd, "hourly_rate") * 100),
+              hourly_rate_minor: parseDecimal(value(fd, "hourly_rate")),
             }
           : {}),
       };
@@ -291,6 +322,7 @@ export default function SideDesk() {
   async function timerAction(
     action: "start" | "pause" | "resume" | "stop",
     activity_id?: string,
+    rateOverride?: number | null,
   ) {
     await run(async () => {
       const changed = await request<{ accumulated_seconds: number }>(
@@ -299,7 +331,7 @@ export default function SideDesk() {
         {
           action,
           ...(action === "start"
-            ? { activity_id }
+            ? { activity_id, rate_minor: rateOverride ?? null }
             : { timer_id: timer?.id, version: timer?.version }),
         },
         await requestKey(),
@@ -327,7 +359,7 @@ export default function SideDesk() {
           phone: value(fd, "phone"),
           billing_address: value(fd, "billing_address"),
           hourly_rate_minor: value(fd, "rate")
-            ? Math.round(number(fd, "rate") * 100)
+            ? parseDecimal(value(fd, "rate"))
             : null,
           ...(editClient ? { version: editClient.version } : {}),
         };
@@ -346,6 +378,10 @@ export default function SideDesk() {
           "POST",
           {
             client_id: value(fd, "client_id"),
+            job_id: value(fd, "job_id") || null,
+            rate_minor: value(fd, "rate_override")
+              ? parseDecimal(value(fd, "rate_override"))
+              : null,
             title: value(fd, "title"),
             billable: fd.has("billable"),
             notes: value(fd, "notes"),
@@ -357,7 +393,14 @@ export default function SideDesk() {
         await refresh();
         navigate("work", a.id);
         notify("Activity saved.");
-        if (fd.has("start_timer")) await timerAction("start", a.id);
+        if (fd.has("start_timer"))
+          await timerAction(
+            "start",
+            a.id,
+            value(fd, "rate_override")
+              ? parseDecimal(value(fd, "rate_override"))
+              : null,
+          );
       } else if (modal === "contact") {
         await request("contacts", "POST", {
           client_id: recordId,
@@ -384,6 +427,9 @@ export default function SideDesk() {
           "POST",
           {
             activity_id: recordId,
+            rate_minor: value(fd, "rate_override")
+              ? parseDecimal(value(fd, "rate_override"))
+              : null,
             duration_seconds: Math.round(number(fd, "minutes") * 60),
           },
           await requestKey(),
@@ -413,7 +459,7 @@ export default function SideDesk() {
       await request("settings", "PUT", {
         name: value(fd, "name"),
         timezone: value(fd, "timezone"),
-        hourly_rate_minor: Math.round(number(fd, "rate") * 100),
+        hourly_rate_minor: parseDecimal(value(fd, "rate")),
         rounding_minutes: number(fd, "rounding"),
         invoice_prefix: value(fd, "prefix"),
         tax_enabled: fd.has("tax_enabled"),
@@ -611,7 +657,10 @@ export default function SideDesk() {
       <a className="skip-link" href="#main">
         Skip to content
       </a>
-      <aside className={mobile ? "sidebar open" : "sidebar"}>
+      <aside
+        aria-label="Workspace navigation"
+        className={mobile ? "sidebar open" : "sidebar"}
+      >
         <div className="brand">
           <span className="brand-icon">S</span>
           <span className="brand-text">SideDesk</span>
@@ -622,15 +671,24 @@ export default function SideDesk() {
             ["dashboard", "◫", "Dashboard"],
             ["clients", "♧", "Clients"],
             ["work", "◷", "Work"],
+            ["sales", "▤", "Sales"],
             ["credentials", "⌑", "Credentials"],
             ["settings", "⚙", "Settings"],
           ].map(([key, icon, label]) => (
             <button
               key={key}
               title={label}
-              className={view === key ? "active" : ""}
+              className={
+                view === key || (key === "work" && view === "jobs")
+                  ? "active"
+                  : ""
+              }
               onClick={() => navigate(key)}
-              aria-current={view === key ? "page" : undefined}
+              aria-current={
+                view === key || (key === "work" && view === "jobs")
+                  ? "page"
+                  : undefined
+              }
             >
               <span className="nav-icon" aria-hidden="true">
                 {icon}
@@ -641,7 +699,7 @@ export default function SideDesk() {
         </nav>
         <div className="roadmap">
           <p className="nav-label">COMING IN LATER MILESTONES</p>
-          <span>Sales · Inventory · Expenses · Reports</span>
+          <span>Quotes · Inventory · Expenses · Reports</span>
         </div>
         <div className="sidebar-footer">
           <button
@@ -678,6 +736,8 @@ export default function SideDesk() {
                   dashboard: "Overview",
                   clients: "Clients",
                   work: "Work",
+                  jobs: "Work / Jobs",
+                  sales: "Sales",
                   credentials: "Credentials",
                   settings: "Settings",
                 }[view]
@@ -697,7 +757,23 @@ export default function SideDesk() {
                 <button onClick={openClients}>Client</button>
                 <button
                   disabled={!clients.length}
-                  onClick={() => setModal("activity")}
+                  onClick={() => navigate("jobs", "new")}
+                >
+                  Job
+                </button>
+                <button
+                  disabled={!clients.length}
+                  onClick={() => navigate("sales", "new")}
+                >
+                  Invoice
+                </button>
+                <button
+                  disabled={!clients.length}
+                  onClick={() => {
+                    setSuggestedJob(null);
+                    setDraftClient("");
+                    setModal("activity");
+                  }}
                 >
                   Activity
                 </button>
@@ -773,11 +849,16 @@ export default function SideDesk() {
                 <button
                   className="primary"
                   disabled={!clients.length}
-                  onClick={() => setModal("activity")}
+                  onClick={() => {
+                    setSuggestedJob(null);
+                    setDraftClient("");
+                    setModal("activity");
+                  }}
                 >
                   + Log activity
                 </button>
               </div>
+              <BillingOverview onNavigate={navigate} />
               <div className="metrics">
                 <div>
                   <span>Active clients</span>
@@ -823,7 +904,11 @@ export default function SideDesk() {
                     <button onClick={openClients}>+ Add client</button>
                     <button
                       disabled={!clients.length}
-                      onClick={() => setModal("activity")}
+                      onClick={() => {
+                        setSuggestedJob(null);
+                        setDraftClient("");
+                        setModal("activity");
+                      }}
                     >
                       Log activity
                     </button>
@@ -1004,7 +1089,11 @@ export default function SideDesk() {
                     </button>
                     <button
                       className="primary"
-                      onClick={() => setModal("activity")}
+                      onClick={() => {
+                        setSuggestedJob(null);
+                        setDraftClient("");
+                        setModal("activity");
+                      }}
                     >
                       + Log activity
                     </button>
@@ -1086,6 +1175,10 @@ export default function SideDesk() {
                         Open credentials
                       </button>
                     </section>
+                    <ClientBillingLinks
+                      clientId={detail.id}
+                      onNavigate={navigate}
+                    />
                     <button
                       className="danger-text"
                       onClick={() =>
@@ -1118,15 +1211,26 @@ export default function SideDesk() {
                   <p className="eyebrow">EVERYDAY WORK</p>
                   <h1>Activities</h1>
                   <p>
-                    Log a small task now. Structured jobs arrive in Milestone 2.
+                    Log a small task now, or organize related work into a job.
                   </p>
                 </div>
                 <button
                   className="primary"
                   disabled={!clients.length}
-                  onClick={() => setModal("activity")}
+                  onClick={() => {
+                    setSuggestedJob(null);
+                    setDraftClient("");
+                    setModal("activity");
+                  }}
                 >
                   + New activity
+                </button>
+              </div>
+              <div className="toolbar">
+                <Tag>Activities</Tag>
+                <button onClick={() => navigate("jobs")}>Jobs</button>
+                <button onClick={() => navigate("sales", "unbilled")}>
+                  Unbilled work
                 </button>
               </div>
               <div className="toolbar">
@@ -1197,6 +1301,7 @@ export default function SideDesk() {
                             <th>Source</th>
                             <th>Rate snapshot</th>
                             <th>Billable</th>
+                            <th>Billing</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1211,6 +1316,15 @@ export default function SideDesk() {
                                 {e.rounding_minutes}m
                               </td>
                               <td>{e.billable ? "Yes" : "No"}</td>
+                              <td>
+                                {e.allocated ? (
+                                  <Tag>Reserved / billed</Tag>
+                                ) : (
+                                  <button onClick={() => setReviewTime(e)}>
+                                    Review billing
+                                  </button>
+                                )}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -1251,6 +1365,7 @@ export default function SideDesk() {
                             billable: fd.has("billable"),
                             notes: value(fd, "notes"),
                             version: activityDetail.version,
+                            job_id: value(fd, "job_id") || null,
                           });
                           await refresh();
                           await reloadDetail();
@@ -1289,7 +1404,7 @@ export default function SideDesk() {
                       <Field label="Description / notes">
                         <textarea
                           name="notes"
-                          defaultValue={activityDetail.notes}
+                          defaultValue={activityDetail.activity_notes}
                           maxLength={20000}
                         />
                       </Field>
@@ -1308,6 +1423,31 @@ export default function SideDesk() {
               lockSignal={lockSignal}
               notify={notify}
               onLockState={handleVaultState}
+            />
+          )}
+          {view === "jobs" && (
+            <JobsPanel
+              key={recordId}
+              clients={clients}
+              recordId={recordId}
+              onNavigate={navigate}
+              notify={notify}
+              onActivity={(j) => {
+                setSuggestedJob(j);
+                setDraftClient(j.client_id);
+                setJobs((v) => [...v.filter((x) => x.id !== j.id), j]);
+                setModal("activity");
+              }}
+            />
+          )}
+          {view === "sales" && (
+            <SalesPanel
+              key={recordId}
+              clients={clients}
+              settings={state.settings}
+              recordId={recordId}
+              onNavigate={navigate}
+              notify={notify}
             />
           )}
           {view === "settings" && (
@@ -1378,7 +1518,7 @@ export default function SideDesk() {
                         type="checkbox"
                         defaultChecked={state.settings.tax_enabled}
                       />
-                      Enable taxes (rules added with invoicing)
+                      Enable tax rates on invoice lines
                     </label>
                     <Field label="Vault idle lock (minutes)">
                       <input
@@ -1463,6 +1603,13 @@ export default function SideDesk() {
                   </section>
                 </div>
               </div>
+              <div className="settings-extra">
+                <BusinessProfile
+                  settings={state.settings}
+                  onSaved={refresh}
+                  notify={notify}
+                />
+              </div>
             </>
           )}
         </main>
@@ -1475,6 +1622,18 @@ export default function SideDesk() {
         <div className="toast" role="status">
           {toast}
         </div>
+      )}
+      {reviewTime && (
+        <TimeReviewDialog
+          entry={reviewTime}
+          onClose={() => setReviewTime(null)}
+          onSaved={async () => {
+            setReviewTime(null);
+            await reloadDetail();
+            await refresh();
+            notify("Time-entry billing review saved.");
+          }}
+        />
       )}
       {modal && (
         <Dialog
@@ -1615,10 +1774,12 @@ export default function SideDesk() {
                     <select
                       name="client_id"
                       defaultValue={
-                        view === "clients" && recordId
+                        suggestedJob?.client_id ||
+                        (view === "clients" && recordId
                           ? recordId
-                          : clients[0]?.id
+                          : clients[0]?.id)
                       }
+                      onChange={(e) => setDraftClient(e.target.value)}
                       required
                     >
                       {clients.map((c) => (
@@ -1627,6 +1788,38 @@ export default function SideDesk() {
                         </option>
                       ))}
                     </select>
+                  </Field>
+                  <Field label="Job (optional)">
+                    <select name="job_id" defaultValue={suggestedJob?.id || ""}>
+                      <option value="">No job - quick activity</option>
+                      {jobs
+                        .filter(
+                          (j) =>
+                            j.client_id ===
+                            (draftClient ||
+                              suggestedJob?.client_id ||
+                              (view === "clients" && recordId
+                                ? recordId
+                                : clients[0]?.id)),
+                        )
+                        .map((j) => (
+                          <option key={j.id} value={j.id}>
+                            {j.title}
+                          </option>
+                        ))}
+                    </select>
+                  </Field>
+                  <Field
+                    label="Manual time hourly rate override (CAD)"
+                    hint="Blank uses job, client, then business default."
+                  >
+                    <input
+                      name="rate_override"
+                      type="number"
+                      min="0"
+                      max="1000000"
+                      step="0.01"
+                    />
                   </Field>
                   <Field label="Activity title">
                     <input name="title" required maxLength={500} />
@@ -1683,16 +1876,30 @@ export default function SideDesk() {
                 </Field>
               )}
               {modal === "time" && (
-                <Field label="Duration (minutes)">
-                  <input
-                    type="number"
-                    name="minutes"
-                    min="0.1"
-                    max="525600"
-                    step="0.1"
-                    required
-                  />
-                </Field>
+                <>
+                  <Field
+                    label="Hourly rate override (CAD)"
+                    hint="Blank uses job, client, then business default."
+                  >
+                    <input
+                      type="number"
+                      name="rate_override"
+                      min="0"
+                      max="1000000"
+                      step="0.01"
+                    />
+                  </Field>
+                  <Field label="Duration (minutes)">
+                    <input
+                      type="number"
+                      name="minutes"
+                      min="0.1"
+                      max="525600"
+                      step="0.1"
+                      required
+                    />
+                  </Field>
+                </>
               )}
               {modal === "password" && (
                 <>

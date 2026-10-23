@@ -2,6 +2,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { z, ZodError } from "zod";
 import type { PoolClient } from "pg";
 import { config } from "./config";
+import { json, read, once } from "./http";
+import { billingRoutes } from "@/features/billing/routes";
+import { jobRoutes } from "@/features/jobs/routes";
+import { effective } from "@/features/work/service";
+import { MoneyError } from "@/features/billing/money";
 import { pool, transaction } from "./db";
 import {
   HttpError,
@@ -18,7 +23,6 @@ import {
   passwordValid,
   equal,
   throttle,
-  digest,
 } from "./auth";
 import {
   id,
@@ -32,11 +36,6 @@ import {
   credentialInput,
   auditType,
 } from "./validation";
-const json = (value: unknown, status = 200, headers?: HeadersInit) =>
-  Response.json(value, {
-    status,
-    headers: { "Cache-Control": "no-store", ...headers },
-  });
 const audit = async (db: PoolClient, type: string, outcome = "success") => {
   await db.query(
     "INSERT INTO general_audit(id,type,outcome) VALUES($1,$2,$3)",
@@ -53,67 +52,6 @@ async function recordAudit(
     "INSERT INTO credential_audit_event(id,credential_id,type,provenance) VALUES($1,$2,$3,$4)",
     [randomUUID(), credentialId, type, provenance],
   );
-}
-async function effective(db: PoolClient, activityId: string) {
-  const r = await db.query(
-    "SELECT a.billable,COALESCE(c.hourly_rate_minor,b.hourly_rate_minor) AS rate_minor,b.rounding_minutes FROM activity a JOIN client c ON c.id=a.client_id CROSS JOIN business_settings b WHERE a.id=$1",
-    [activityId],
-  );
-  requireValue(r.rowCount, 404, "Activity not found");
-  return r.rows[0];
-}
-async function read(req: Request) {
-  requireValue(
-    req.headers.get("content-type")?.startsWith("application/json"),
-    415,
-    "Use JSON",
-  );
-  const reader = req.body?.getReader();
-  requireValue(reader, 400, "Missing body");
-  let size = 0;
-  const chunks: Uint8Array[] = [];
-  while (true) {
-    const r = await reader.read();
-    if (r.done) break;
-    size += r.value.length;
-    if (size > 300000) {
-      await reader.cancel();
-      throw new HttpError(413, "Request too large");
-    }
-    chunks.push(r.value);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new HttpError(400, "Invalid JSON");
-  }
-}
-async function once(
-  db: PoolClient,
-  key: string,
-  operation: string,
-  input: unknown,
-  fn: () => Promise<unknown>,
-) {
-  const h = digest(JSON.stringify(input));
-  await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [key]);
-  const prior = (
-    await db.query("SELECT * FROM idempotency WHERE key=$1", [key])
-  ).rows[0];
-  if (prior) {
-    requireValue(
-      prior.operation === operation && prior.request_hash === h,
-      409,
-      "Request key already used",
-    );
-    return prior.response;
-  }
-  const result = await fn();
-  await db.query(
-    "INSERT INTO idempotency(key,operation,request_hash,response) VALUES($1,$2,$3,$4)",
-    [key, operation, h, JSON.stringify(result)],
-  );
-  return result;
 }
 async function handle(req: Request, path: string[]) {
   originCheck(req);
@@ -221,6 +159,9 @@ async function handle(req: Request, path: string[]) {
   }
   requireValue(sess, 401, "Sign in to continue");
   if (method !== "GET") csrfCheck(req, sess.token);
+  const featureResponse =
+    (await jobRoutes(req, path)) ?? (await billingRoutes(req, path));
+  if (featureResponse) return featureResponse;
   if (route === "request-key" && method === "GET")
     return json({ id: randomUUID() });
   if (route === "logout" && method === "POST") {
@@ -374,12 +315,24 @@ async function handle(req: Request, path: string[]) {
       return json(r.rows[0]);
     }
     if (method === "DELETE") {
-      await transaction((db) =>
-        db.query(
+      await transaction(async (db) => {
+        await db.query("SELECT id FROM client WHERE id=$1 FOR UPDATE", [
+          clientId,
+        ]);
+        const pending = await db.query(
+          `SELECT EXISTS(SELECT 1 FROM time_entry t JOIN activity a ON a.id=t.activity_id WHERE a.client_id=$1 AND t.billable AND NOT EXISTS(SELECT 1 FROM invoice_allocation x WHERE x.time_entry_id=t.id AND x.released_at IS NULL)) OR EXISTS(SELECT 1 FROM invoice i WHERE i.client_id=$1 AND i.archived_at IS NULL AND (i.state='draft' OR (i.state='issued' AND i.total_minor>COALESCE((SELECT sum(CASE WHEN p.kind='receipt' THEN p.amount_minor ELSE -p.amount_minor END) FROM payment p WHERE p.invoice_id=i.id),0)))) AS blocked`,
+          [clientId],
+        );
+        requireValue(
+          !pending.rows[0].blocked,
+          400,
+          "Finish unbilled work, discard drafts and settle outstanding invoices before archiving this client.",
+        );
+        await db.query(
           "UPDATE client SET archived_at=now(),version=version+1 WHERE id=$1",
           [clientId],
-        ),
-      );
+        );
+      });
       return json({ ok: true });
     }
   }
@@ -417,17 +370,21 @@ async function handle(req: Request, path: string[]) {
       .object({
         client_id: id.nullable(),
         activity_id: id.nullable(),
+        job_id: id.nullable().default(null),
         body: text(20000),
       })
       .strict()
-      .refine((v) => Boolean(v.client_id) !== Boolean(v.activity_id))
+      .refine(
+        (v) =>
+          [v.client_id, v.activity_id, v.job_id].filter(Boolean).length === 1,
+      )
       .parse(await read(req));
     return json(
       (
         await transaction((db) =>
           db.query(
-            "INSERT INTO note(id,client_id,activity_id,body) VALUES($1,$2,$3,$4) RETURNING *",
-            [randomUUID(), p.client_id, p.activity_id, p.body],
+            "INSERT INTO note(id,client_id,activity_id,job_id,body) VALUES($1,$2,$3,$4,$5) RETURNING *",
+            [randomUUID(), p.client_id, p.activity_id, p.job_id, p.body],
           ),
         )
       ).rows[0],
@@ -460,13 +417,13 @@ async function handle(req: Request, path: string[]) {
         );
         requireValue(active.rowCount, 400, "Choose an active client");
         const r = await db.query(
-          "INSERT INTO activity(id,client_id,title,billable,notes) VALUES($1,$2,$3,$4,$5) RETURNING *",
-          [randomUUID(), p.client_id, p.title, p.billable, p.notes],
+          "INSERT INTO activity(id,client_id,title,billable,notes,job_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",
+          [randomUUID(), p.client_id, p.title, p.billable, p.notes, p.job_id],
         );
         if (p.duration_seconds) {
-          const e = await effective(db, r.rows[0].id);
+          const e = await effective(db, r.rows[0].id, p.rate_minor);
           await db.query(
-            "INSERT INTO time_entry(id,activity_id,duration_seconds,billable,source,rate_minor,rounding_minutes) VALUES($1,$2,$3,$4,'manual',$5,$6)",
+            "INSERT INTO time_entry(id,activity_id,duration_seconds,billable,source,rate_minor,rounding_minutes,job_id,rounding_scope,rate_source) VALUES($1,$2,$3,$4,'manual',$5,$6,$7,$8,$9)",
             [
               randomUUID(),
               r.rows[0].id,
@@ -474,6 +431,9 @@ async function handle(req: Request, path: string[]) {
               p.billable,
               e.rate_minor,
               e.rounding_minutes,
+              e.job_id,
+              e.rounding_scope,
+              e.rate_source,
             ],
           );
         }
@@ -492,9 +452,10 @@ async function handle(req: Request, path: string[]) {
       requireValue(r.rowCount, 404, "Activity not found");
       return json({
         ...r.rows[0],
+        activity_notes: r.rows[0].notes,
         entries: (
           await pool().query(
-            "SELECT * FROM time_entry WHERE activity_id=$1 ORDER BY created_at DESC",
+            "SELECT t.*,EXISTS(SELECT 1 FROM invoice_allocation x WHERE x.time_entry_id=t.id AND x.released_at IS NULL) AS allocated FROM time_entry t WHERE activity_id=$1 ORDER BY created_at DESC",
             [aid],
           )
         ).rows,
@@ -514,13 +475,23 @@ async function handle(req: Request, path: string[]) {
           status: z.enum(["open", "completed", "cancelled"]),
           notes: z.string().max(20000),
           version: z.number().int().positive(),
+          job_id: id.nullable().optional(),
         })
         .strict()
         .parse(await read(req));
       const r = await transaction((db) =>
         db.query(
-          "UPDATE activity SET title=$1,billable=$2,status=$3,notes=$4,version=version+1,updated_at=now() WHERE id=$5 AND version=$6 RETURNING *",
-          [p.title, p.billable, p.status, p.notes, aid, p.version],
+          "UPDATE activity SET title=$1,billable=$2,status=$3,notes=$4,job_id=CASE WHEN $7 THEN $8::uuid ELSE job_id END,version=version+1,updated_at=now() WHERE id=$5 AND version=$6 RETURNING *",
+          [
+            p.title,
+            p.billable,
+            p.status,
+            p.notes,
+            aid,
+            p.version,
+            p.job_id !== undefined,
+            p.job_id ?? null,
+          ],
         ),
       );
       requireValue(r.rowCount, 409, "Activity changed. Refresh.");
@@ -532,6 +503,7 @@ async function handle(req: Request, path: string[]) {
         .object({
           activity_id: id,
           duration_seconds: z.number().int().min(1).max(31536000),
+          rate_minor: rate.nullable().default(null),
         })
         .strict()
         .parse(await read(req)),
@@ -539,10 +511,10 @@ async function handle(req: Request, path: string[]) {
     return json(
       await transaction((db) =>
         once(db, key, "time-entry", p, async () => {
-          const e = await effective(db, p.activity_id);
+          const e = await effective(db, p.activity_id, p.rate_minor);
           return (
             await db.query(
-              "INSERT INTO time_entry(id,activity_id,duration_seconds,billable,source,rate_minor,rounding_minutes) VALUES($1,$2,$3,$4,'manual',$5,$6) RETURNING *",
+              "INSERT INTO time_entry(id,activity_id,duration_seconds,billable,source,rate_minor,rounding_minutes,job_id,rounding_scope,rate_source) VALUES($1,$2,$3,$4,'manual',$5,$6,$7,$8,$9) RETURNING *",
               [
                 randomUUID(),
                 p.activity_id,
@@ -550,6 +522,9 @@ async function handle(req: Request, path: string[]) {
                 e.billable,
                 e.rate_minor,
                 e.rounding_minutes,
+                e.job_id,
+                e.rounding_scope,
+                e.rate_source,
               ],
             )
           ).rows[0];
@@ -574,6 +549,7 @@ async function handle(req: Request, path: string[]) {
           activity_id: id.optional(),
           timer_id: id.optional(),
           version: z.number().int().positive().optional(),
+          rate_minor: rate.nullable().default(null),
         })
         .strict()
         .parse(await read(req)),
@@ -596,10 +572,10 @@ async function handle(req: Request, path: string[]) {
               409,
               "Stop the active timer first",
             );
-            const e = await effective(db, p.activity_id);
+            const e = await effective(db, p.activity_id, p.rate_minor);
             return (
               await db.query(
-                "INSERT INTO timer(id,owner_id,activity_id,state,segment_started_at,rate_minor,rounding_minutes,billable) VALUES($1,$2,$3,'running',clock_timestamp(),$4,$5,$6) RETURNING *",
+                "INSERT INTO timer(id,owner_id,activity_id,state,segment_started_at,rate_minor,rounding_minutes,billable,job_id,rounding_scope,rate_source) VALUES($1,$2,$3,'running',clock_timestamp(),$4,$5,$6,$7,$8,$9) RETURNING *",
                 [
                   randomUUID(),
                   sess.owner_id,
@@ -607,6 +583,9 @@ async function handle(req: Request, path: string[]) {
                   e.rate_minor,
                   e.rounding_minutes,
                   e.billable,
+                  e.job_id,
+                  e.rounding_scope,
+                  e.rate_source,
                 ],
               )
             ).rows[0];
@@ -663,7 +642,7 @@ async function handle(req: Request, path: string[]) {
           );
           if (state === "stopped" && total > 0)
             await db.query(
-              "INSERT INTO time_entry(id,activity_id,timer_id,duration_seconds,billable,source,rate_minor,rounding_minutes) VALUES($1,$2,$3,$4,$5,'timer',$6,$7)",
+              "INSERT INTO time_entry(id,activity_id,timer_id,duration_seconds,billable,source,rate_minor,rounding_minutes,job_id,rounding_scope,rate_source) VALUES($1,$2,$3,$4,$5,'timer',$6,$7,$8,$9,$10)",
               [
                 randomUUID(),
                 t.activity_id,
@@ -672,6 +651,9 @@ async function handle(req: Request, path: string[]) {
                 t.billable,
                 t.rate_minor,
                 t.rounding_minutes,
+                t.job_id,
+                t.rounding_scope,
+                t.rate_source,
               ],
             );
           return r.rows[0];
@@ -863,6 +845,7 @@ export async function api(req: Request, path: string[]) {
   } catch (e) {
     if (req.signal.aborted || (e instanceof Error && e.name === "AbortError"))
       return json({ error: "Request canceled." }, 499);
+    if (e instanceof MoneyError) return json({ error: e.message }, 400);
     if (e instanceof HttpError) return json({ error: e.message }, e.status);
     if (e instanceof ZodError)
       return json(
@@ -875,6 +858,14 @@ export async function api(req: Request, path: string[]) {
         {
           error:
             "This record or operation already exists. Refresh before retrying.",
+        },
+        409,
+      );
+    if (code === "23514")
+      return json(
+        {
+          error:
+            "This change violates a protected record or billing invariant.",
         },
         409,
       );

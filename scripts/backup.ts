@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pool } from "../lib/db";
 import { config } from "../lib/config";
+import packageInfo from "../package.json" with { type: "json" };
 const exec = promisify(execFile);
 export async function backup() {
   const c = config(),
@@ -64,7 +65,7 @@ export async function backup() {
       JSON.stringify(
         {
           format: 1,
-          appVersion: "0.1.0",
+          appVersion: packageInfo.version,
           created_at: new Date().toISOString(),
           vault: "ciphertext and wrapped envelopes in database.dump",
           deploymentSecrets: "back up separately; not in this manifest",

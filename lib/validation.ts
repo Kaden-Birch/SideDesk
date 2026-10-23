@@ -110,6 +110,8 @@ export const activityInput = z
     billable: z.boolean(),
     notes: z.string().max(20000).default(""),
     duration_seconds: z.number().int().min(0).max(31536000).default(0),
+    job_id: id.nullable().default(null),
+    rate_minor: rate.nullable().default(null),
   })
   .strict();
 export const auditType = z.enum([

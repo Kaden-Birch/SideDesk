@@ -1,6 +1,6 @@
 # SideDesk
 
-Self-hosted, single-owner freelance IT management. [Validated milestone checklist](docs/milestone-1-checklist.md). This repository implements the Milestone 0 foundation and Milestone 1: clients/contacts/contextual notes, quick activities, manual time, persistent timer, and a browser-encrypted credential vault with recovery, custom fields and TOTP.
+Self-hosted, single-owner freelance IT management. [Milestone 2 acceptance checklist](docs/milestone-2-checklist.md). Implemented through Milestone 2: clients, contacts, contextual notes, quick activities, persistent time tracking, encrypted credentials, structured jobs, private job files, unbilled work, invoice drafts, immutable issued PDFs and payments.
 
 **Do not enter actual client credentials until an independent security/cryptographic review is complete.** Tests do not constitute an audit. Ordinary HTTP use is supported; vault features fail closed when secure browser APIs are unavailable. A VPN does not replace TLS or protect against malicious JavaScript from a compromised host.
 
@@ -42,13 +42,13 @@ npm run db:migrate
 npm run dev
 npm run typecheck
 npm run lint
+npx playwright install chromium
 npm test
 npm run build
-npx playwright install chromium
 npm run test:e2e
 ```
 
-`npm test` starts disposable real PostgreSQL on loopback port 55433, runs integration and cryptographic tests, and stops it. `npm run test:e2e` starts its own PostgreSQL on 55432 and production app instances on 3100/3101. It uses a test-only local DNS mapping for `sidedesk.test` to prove insecure-origin restrictions. These test scripts contain fictional credentials only; never expose test ports publicly. Each acceptance run uses a fresh disposable cluster under `work/`; stop any interrupted test server before rerunning. Test artifacts go to `test-results/` and `playwright-report/`, both ignored by Git.
+`npm test` starts disposable real PostgreSQL on loopback ports 55433–55435, runs integration, PDF and cryptographic tests, and stops it. `npm run test:e2e` starts its own PostgreSQL on 55432 and production app instances on 3100/3101. It uses a test-only local DNS mapping for `sidedesk.test` to prove insecure-origin restrictions. These test scripts contain fictional credentials only; never expose test ports publicly. Each acceptance run uses a fresh disposable cluster under `work/`; stop any interrupted test server before rerunning. Test artifacts go to `test-results/` and `playwright-report/`, both ignored by Git.
 
 For optional fictional demo records **after** owner creation on a demo deployment only:
 
@@ -56,7 +56,7 @@ For optional fictional demo records **after** owner creation on a demo deploymen
 docker compose exec -e ALLOW_FICTIONAL_SEED=yes app npm run db:seed
 ```
 
-This refuses nonempty client lists. Demo seeding never creates a default owner or vault.
+This refuses nonempty client lists and requires owner setup. It creates fictional client/job/activity/time records and an invoice draft. Demo seeding never creates a default owner or vault.
 
 ## Vault use and limits
 
@@ -86,10 +86,25 @@ Back up before updating; pull the intended source commit, build, and use `docker
 
 If the owner login password is lost, a deployment operator may supply a new password through stdin to `npm run db:reset-owner` inside the app container. Do not place passwords in command arguments/history. This revokes all account sessions and never changes vault envelopes. Vault recovery still needs the separate recovery key/password. There is no public account-reset endpoint.
 
+## Jobs and invoicing
+
+Create a job from Work with scope, priority, status, due date and optional hourly rate. Activities still work directly against a client. Link existing activities to a same-client job; earlier time keeps its historical rate and job snapshots. Add contextual job notes and private files up to 10 MB. Downloads require owner login and are served as attachments, never executable previews. These ordinary files are not encrypted vault records; do not upload credential secrets.
+
+Rates resolve entry override → job → client → business. Time captures the rate, rounding increment and entry/group scope when recorded or when a timer starts. Review unallocated entries with an explicit correction reason. Changing settings does not silently reprice history. Invoice conversion rounds up by the captured increment, once per entry or once per compatible group. Compatible groups share historical job, rate, increment and scope. All amounts use integer cents and rational half-up arithmetic; time prints exact billable minutes.
+
+In Sales → Unbilled select stopped entries for one client and create a draft. A draft reserves each entire source entry. Partial time allocation is deliberately unavailable; removing a line, discarding a draft or voiding an unpaid invoice releases reservations. Allocated time is protected from edits. A client with unfinished billing cannot be archived.
+
+Drafts support contact selection, manual lines, ordering, discounts and optional per-line taxes after enabling taxes in Settings. Configure business identity, terms, payment instructions, rounding scope and accent in Settings. Save to calculate exact server totals, preview Letter/A4, then issue. Number allocation, snapshots and PDF bytes commit together; render failure leaves the draft and sequence unchanged. Issued lines, identity, amounts and original PDF are immutable even after client/settings changes. Download always returns the exact issued bytes. The PDF shows received/balance **at issue**; current payments and balance appear on the invoice page.
+
+Record partial/full receipts with date, method and reference. Correct a mistaken receipt with an append-only full reversal and reason. This corrects bookkeeping; it does not initiate a bank refund. Overpayments are rejected. Voiding requires zero net receipts and a reason. Original PDFs remain unchanged; void state appears in the app history. Credits/refunds, quotes, SMTP, tax-rule configuration and expenses/travel are reserved for Milestone 3. No email or delivery state is fabricated.
+
+Chromium is bundled with the Docker image; no external PDF service, CDN or runtime browser download is needed. Local development must run `npx playwright install chromium` before PDFs/tests. Optional `PDF_CHROMIUM_PATH` selects an installed compatible Chromium executable. Rendering disables JavaScript/network access, uses escaped server HTML and bounds concurrency/time. Issued PDF bytes live transactionally in PostgreSQL; job files live in the private upload volume. Backups include both, with an application-version manifest. M2 adds migration `0002`; rolling back to M1 against the M2 schema is unsupported. Restore a compatible pre-upgrade backup into a fresh deployment for rollback.
+
 ## Milestones
 
-- M0: owner setup/auth, responsive themes/shell, PostgreSQL, Docker, CI, security architecture and baseline backup.
+- M0: owner setup/auth, responsive themes/shell, PostgreSQL, Docker, CI, security architecture and backup.
 - M1: encrypted vault/recovery/TOTP, clients/contacts/notes, quick work and timer.
-- Next, M2: structured jobs, unbilled queue, rate hierarchy/rounding, invoice allocations and unique numbering, immutable PDFs and payments.
+- M2: jobs, private job files, unbilled queue, rate/rounding snapshots, invoice allocations/numbering, immutable PDFs and receipts.
+- Next, M3: quotes and conversion, SMTP history, configurable taxes, expenses/receipts, mileage/travel and auditable credits.
 
-Sales, Inventory, Expenses and Reports are labelled future features rather than dead navigation. No later-milestone feature is represented as implemented. Read [the full specification](docs/SIDEDESK_SPEC.md), [security design](docs/threat-model.md), [ADRs](docs/implementation-decisions.md), and [milestone checklist](docs/milestone-1-checklist.md).
+Inventory, Expenses and Reports remain labelled future features. Read [the full specification](docs/SIDEDESK_SPEC.md), [security design](docs/threat-model.md), [implementation decisions](docs/implementation-decisions.md), and [M2 checklist](docs/milestone-2-checklist.md). The [M0/M1 checklist](docs/milestone-1-checklist.md) retains historical validation evidence.
