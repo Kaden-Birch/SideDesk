@@ -34,7 +34,7 @@ await pool().end();
 const children = [
   spawn(process.execPath, [".next/standalone/server.js"], {
     stdio: "inherit",
-    env: { ...process.env, PORT: "3100", HOSTNAME: "0.0.0.0" },
+    env: { ...process.env, PORT: "3100", HOSTNAME: "127.0.0.1" },
   }),
   spawn(process.execPath, [".next/standalone/server.js"], {
     stdio: "inherit",
@@ -42,7 +42,7 @@ const children = [
       ...process.env,
       APP_URL: "http://sidedesk.test:3101",
       PORT: "3101",
-      HOSTNAME: "0.0.0.0",
+      HOSTNAME: "127.0.0.1",
     },
   }),
 ];

@@ -1,5 +1,6 @@
 import { beforeAll, afterAll, it, expect, vi } from "vitest";
 import EmbeddedPostgres from "embedded-postgres";
+import pgClient from "pg";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -291,6 +292,29 @@ it("enforces optimistic concurrency on client changes", async () => {
   };
   expect((await call("clients/" + clientId, "PUT", body)).status).toBe(200);
   expect((await call("clients/" + clientId, "PUT", body)).status).toBe(409);
+});
+it("recovers from an idle database disconnection without an unhandled error or secret log", async () => {
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  const db = await pool().connect();
+  const pid = (await db.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+  db.release();
+  const disconnected = new Promise<void>((resolve) =>
+    pool().once("error", () => resolve()),
+  );
+  const admin = new pgClient.Client({
+    connectionString: process.env.DATABASE_URL,
+  });
+  try {
+    await admin.connect();
+    await admin.query("SELECT pg_terminate_backend($1)", [pid]);
+    await disconnected;
+    expect((await pool().query("SELECT 1 AS n")).rows[0].n).toBe(1);
+    expect(log).toHaveBeenCalledWith("database_connection_lost");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("test:test");
+  } finally {
+    await admin.end();
+    log.mockRestore();
+  }
 });
 it("invalidates logout sessions and idle-expired sessions", async () => {
   expect((await call("logout", "POST", {})).status).toBe(200);

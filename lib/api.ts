@@ -861,6 +861,8 @@ export async function api(req: Request, path: string[]) {
   try {
     return await handle(req, path);
   } catch (e) {
+    if (req.signal.aborted || (e instanceof Error && e.name === "AbortError"))
+      return json({ error: "Request canceled." }, 499);
     if (e instanceof HttpError) return json({ error: e.message }, e.status);
     if (e instanceof ZodError)
       return json(

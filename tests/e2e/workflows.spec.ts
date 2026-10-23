@@ -18,6 +18,19 @@ async function login(page: Page) {
   ).toBeVisible();
 }
 test.describe.serial("Milestone 0 and 1 acceptance", () => {
+  const serverErrors = new WeakMap<Page, string[]>();
+  test.beforeEach(async ({ page }) => {
+    const failures: string[] = [];
+    serverErrors.set(page, failures);
+    page.on("response", (r) => {
+      if (r.url().includes("/api/") && r.status() >= 500)
+        failures.push(`${r.status()} ${new URL(r.url()).pathname}`);
+    });
+  });
+  test.afterEach(async ({ page }) => {
+    expect(serverErrors.get(page) || []).toEqual([]);
+  });
+
   test("owner onboarding, real clients and work in both themes and phone layout", async ({
     page,
   }) => {
@@ -363,6 +376,23 @@ test.describe.serial("Milestone 0 and 1 acceptance", () => {
         exact: true,
       }),
     ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Start timer", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Pause", exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(
+      page.getByRole("button", { name: "Pause", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Stop & save", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Stop & save", exact: true }),
+    ).toHaveCount(0);
+
     await page
       .getByRole("button", { name: "Credentials", exact: true })
       .click();
