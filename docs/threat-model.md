@@ -1,0 +1,43 @@
+# Vault threat model — implemented M1 format
+
+The pre-implementation review is retained in architecture-decisions.md. This document records actual format v1 and residual risks. No independent audit or certification has been obtained. Actual client secrets are gated on independent review.
+
+## Trust and data flow
+
+One owner authenticates with an Argon2id server-side verifier. Opaque random session tokens are hashed in PostgreSQL. The vault password never participates in login and is never transmitted. Browser crypto is isolated in `features/vault/crypto.ts`; server routes cannot import it. Decrypted objects stay in the Credentials component, never SSR, shared query caches, URLs or persistent browser storage. A browser crypto worker is deferred; components retain a VMK byte array in a ref, scrub it on lock and invalidate in-flight operations using an epoch. This is an explicit implementation tradeoff: no worker or JavaScript mechanism would make compromised same-origin code safe.
+
+Server credential APIs accept strict envelope/payload schemas, no username/password/custom-field columns. Client lists/detail responses omit ciphertext except the dedicated credential endpoint. Labels and client associations are intentionally plaintext. QR images are decoded locally, bounded by size/dimensions, and never uploaded.
+
+## Format v1
+
+All binary fields use canonical Base64. IDs are UUIDs. Canonical AAD/info is UTF-8 JSON of fixed-position arrays. Browser secure context, subtle crypto and secure randomness must all be available; capabilities for clipboard/camera are independent.
+
+- Random 32-byte VMK, random 16-byte vault HKDF salt.
+- Password: Argon2id v1.3, 65536 KiB, three iterations, four lanes, 32-byte output; fresh 16-byte salt. HKDF-SHA256 derives wrapping AES key with info `["SideDesk",1,"wrap","password",vaultId,envelopeId]` and envelope salt.
+- Recovery: independent random 32-byte secret plus 4-byte SHA256 transcription checksum, encoded as hyphenated hex groups. HKDF-SHA256 derives wrapping AES key using recovery salt and the same info array with `"recovery"` purpose. Checksum is not a password verifier or extra entropy.
+- Wrap: AES-256-GCM, fresh random 12-byte nonce, 128-bit tag. AAD `["SideDesk",1,"envelope",vaultId,envelopeId,kind,kdf,salt,memory,iterations,parallelism]`. Recovery metadata retains fixed Argon2 parameter slots for v1 uniform encoding but does not apply Argon2 to a high-entropy recovery secret.
+- Record key: HKDF-SHA256(VMK, vault salt, `["SideDesk",1,"credential",vaultId,recordId,1]`). Final `1` is key generation, fixed in M1.
+- Record encryption: AES-256-GCM with fresh 12-byte nonce/tag128. AAD `["SideDesk",1,"payload",vaultId,recordId,clientId,1,revisionId]`. Revision ID changes with every encryption. DB nonce registry rejects reuse for the same vault/record key, including after archive. Client reassignment requires authenticated decrypt/re-encrypt.
+- Structured plaintext contains username, password, URL, notes, recovery codes, typed custom fields and supported TOTP parameters. Schema validation happens after authentication succeeds; no partial display on error.
+
+Changing the vault password rewraps the same VMK atomically with optimistic versioning. Recovery validates the independent envelope, wraps the same VMK with a new password and a newly confirmed recovery key, and updates both envelopes atomically. Lost response/stale update is surfaced; lock and reload before retry. Generation rotation is not implemented in M1; the staged rotation design in the initial review remains future work. Revoking an envelope cannot erase older copies/backups.
+
+## Threats and controls
+
+| Threat | Implemented control | Residual limitation |
+|---|---|---|
+| Stolen DB/backups | Browser ciphertext, separate salted Argon2id password wrapping, random recovery key | Weak vault password permits offline guessing; plaintext metadata visible |
+| HTTP interception | Strong warning and secure-context gating; no server decryption fallback | HTTP account/business data and delivered code can be intercepted; VPN does not provide TLS integrity |
+| XSS/dependency/host compromise | Pinned lockfile, local scripts, nonce CSP, no remote assets, safe Markdown without raw HTML, explicit DTOs | Same-origin malicious JS or compromised endpoint can capture unlock keys/secrets |
+| CSRF/DNS rebinding | Exact Host/Origin, session-bound token, HttpOnly SameSite cookies | HTTP lacks confidentiality; external TLS must match operator-configured APP_URL |
+| First owner takeover/race | Distinct deployment bootstrap token, installation row lock, singleton owner | Operator must keep bootstrap token private and restrict network exposure |
+| Brute force/session theft | Persistent global/per-login throttle, tuned Argon2id, expiry and revocation | Global throttle can temporarily deny owner access; it is deliberately not permanent |
+| Tamper/swap | AEAD with record/client identity and envelope KDF context; nonce registry | Malicious host can roll back whole DB/code; no external monotonic trust anchor |
+| Unattended browser | Idle/hidden/navigation/logout lock, epoch checks, cross-tab lock channel | Memory/OS clipboard/extensions cannot be guaranteed erased |
+| QR input/parser | Local jsQR, bounded file/dimensions, strict otpauth/TOTP parser | Camera permission/browser support varies; file/manual alternatives remain |
+| Secret logging | Allowlisted event types, generic server failure codes, no body/stack/parameter logs | Operator-added reverse proxies or instrumentation must also avoid request-body logging |
+| Lost data/keys | Confirmed recovery key, rehearsal, consistent backups and restored-ciphertext verification | Both unlock/recovery lost means permanent loss |
+
+CSP permits `wasm-unsafe-eval` for locally bundled Argon2 WASM, nonce-based application scripts and inline CSS for React styling; no production `unsafe-eval` for JavaScript. Development differs for Next.js tooling. No analytics, remote scripts, crash upload or service worker is installed. `hash-wasm`, Web Crypto, OTPAuth and jsQR are dependencies, not proof of cryptographic review. Dependency audit coverage and supported phone memory budgets require independent assessment before real secrets.
+
+Automated tests cover wrong keys, mutation/swapping, ciphertext-only wire/storage, rewrap/recovery, RFC TOTP vectors, session/CSRF races and secure/insecure browser workflows. Best-effort browser reveal/copy audit cannot prove a person did not inspect/copy data otherwise.

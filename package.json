@@ -1,0 +1,48 @@
+{
+  "name": "sidedesk",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1",
+    "build": "next build && node scripts/prepare-standalone.mjs",
+    "start": "node .next/standalone/server.js",
+    "typecheck": "next typegen && tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "db:reset-owner": "tsx scripts/reset-owner.ts",
+    "backup": "tsx scripts/backup.ts",
+    "format:check": "prettier --check app components features lib scripts tests proxy.ts *config* package.json compose.yaml .github/workflows"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "2.2.2",
+    "drizzle-orm": "0.45.4",
+    "hash-wasm": "4.12.0",
+    "jsqr": "1.4.0",
+    "next": "16.4.3",
+    "otpauth": "9.5.2",
+    "pg": "8.23.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "10.1.0",
+    "tsx": "4.23.15",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "@types/node": "26.6.5",
+    "@types/pg": "8.23.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "embedded-postgres": "18.4.0-beta.17",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.3",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  },
+  "type": "module"
+}

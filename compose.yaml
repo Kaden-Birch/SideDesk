@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: sidedesk
+      POSTGRES_DB: sidedesk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a unique database password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U sidedesk -d sidedesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    build: .
+    image: sidedesk:local
+    env_file: .env
+    command: [npm, run, db:migrate]
+    networks: [database]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+  app:
+    image: sidedesk:local
+    build: .
+    env_file: .env
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    volumes:
+      - uploads:/data/uploads
+      - backups:/data/backups
+    networks: [database, frontend]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:3000/api/health',{headers:{host:new URL(process.env.APP_URL).host}}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+networks:
+  database:
+    internal: true
+  frontend:
+volumes:
+  postgres_data:
+  uploads:
+  backups:
