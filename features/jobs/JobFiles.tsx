@@ -6,16 +6,19 @@ type Attachment = { id: string; original_name: string; byte_size: number };
 export default function JobFiles({
   jobId,
   notify,
+  context = "jobs",
 }: {
   jobId: string;
+  context?: "jobs" | "expenses";
   notify: (s: string) => void;
 }) {
   const [files, setFiles] = useState<Attachment[]>([]),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const load = useCallback(
-    async () => setFiles(await request<Attachment[]>(`jobs/${jobId}/files`)),
-    [jobId],
+    async () =>
+      setFiles(await request<Attachment[]>(`${context}/${jobId}/files`)),
+    [jobId, context],
   );
   useEffect(() => {
     void Promise.resolve()
@@ -35,7 +38,7 @@ export default function JobFiles({
   }
   return (
     <section className="card">
-      <h2>Job files</h2>
+      <h2>{context === "jobs" ? "Job files" : "Receipt files"}</h2>
       <p className="muted">
         Private authenticated downloads. Attachments are ordinary files; use the
         encrypted vault for credentials. Maximum 10 MB.
@@ -45,7 +48,11 @@ export default function JobFiles({
           {error}
         </p>
       )}
-      <Field label="Upload job file">
+      <Field
+        label={
+          context === "jobs" ? "Upload job file" : "Upload expense receipt"
+        }
+      >
         <input
           type="file"
           disabled={busy}
@@ -56,16 +63,16 @@ export default function JobFiles({
               void run(async () => {
                 if (file.size > 10485760)
                   throw new Error("Files must be no larger than 10 MB");
-                await uploadJobFile(jobId, file);
+                await uploadJobFile(jobId, file, context);
                 await load();
-                notify("Job file stored privately.");
+                notify("Attachment stored privately.");
               });
           }}
         />
       </Field>
       {files.map((f) => (
         <div className="row record-row" key={f.id}>
-          <a className="link" href={`/api/jobs/${jobId}/files/${f.id}`}>
+          <a className="link" href={`/api/${context}/${jobId}/files/${f.id}`}>
             {f.original_name}
           </a>
           <small>{(f.byte_size / 1024).toFixed(1)} KB</small>
@@ -78,7 +85,7 @@ export default function JobFiles({
                 )
               )
                 void run(async () => {
-                  await request(`jobs/${jobId}/files/${f.id}`, "DELETE");
+                  await request(`${context}/${jobId}/files/${f.id}`, "DELETE");
                   await load();
                   notify("Attachment archived.");
                 });

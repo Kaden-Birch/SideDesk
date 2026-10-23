@@ -44,13 +44,22 @@ export async function billingRoutes(
     );
   if (route === "billing-summary" && method === "GET") {
     const r = (
-      await pool()
-        .query(`SELECT (SELECT COALESCE(sum(CASE WHEN p.kind='receipt' THEN p.amount_minor ELSE -p.amount_minor END),0) FROM payment p WHERE p.received_on>=date_trunc('month',now() AT TIME ZONE b.timezone)::date AND p.received_on< (date_trunc('month',now() AT TIME ZONE b.timezone)+interval '1 month')::date) AS received_month_minor,
- (SELECT COALESCE(sum(i.total_minor-COALESCE((SELECT sum(CASE WHEN p.kind='receipt' THEN p.amount_minor ELSE -p.amount_minor END) FROM payment p WHERE p.invoice_id=i.id),0)),0) FROM invoice i WHERE i.state='issued') AS outstanding_minor,
+      await pool().query(`SELECT
+ (SELECT COALESCE(sum(CASE WHEN p.kind='receipt' THEN p.amount_minor ELSE -p.amount_minor END),0) FROM payment p WHERE p.received_on>=date_trunc('month',now() AT TIME ZONE b.timezone)::date AND p.received_on<(date_trunc('month',now() AT TIME ZONE b.timezone)+interval '1 month')::date)
+ -(SELECT COALESCE(sum(CASE WHEN a.kind='refund' THEN a.amount_minor ELSE -a.amount_minor END),0) FROM invoice_adjustment a WHERE a.kind IN ('refund','refund_reversal') AND a.occurred_on>=date_trunc('month',now() AT TIME ZONE b.timezone)::date AND a.occurred_on<(date_trunc('month',now() AT TIME ZONE b.timezone)+interval '1 month')::date) AS received_month_minor,
+ (SELECT COALESCE(sum(f.balance_minor),0) FROM invoice_financials f JOIN invoice i ON i.id=f.id WHERE i.state='issued') AS outstanding_minor,
+ (SELECT COALESCE(sum(f.customer_credit_minor),0) FROM invoice_financials f JOIN invoice i ON i.id=f.id WHERE i.state='issued') AS customer_credit_minor,
  (SELECT COALESCE(sum(t.duration_seconds),0) FROM time_entry t WHERE billable AND NOT EXISTS(SELECT 1 FROM invoice_allocation x WHERE x.time_entry_id=t.id AND x.released_at IS NULL)) AS unbilled_seconds FROM business_settings b`)
     ).rows[0];
     return json(
-      Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Number(v)])),
+      Object.fromEntries(
+        Object.entries(r).map(([k, v]) => [
+          k,
+          k.endsWith("_minor") && !Number.isSafeInteger(Number(v))
+            ? String(v)
+            : Number(v),
+        ]),
+      ),
     );
   }
   if (route === "unbilled" && method === "GET") return json(await s.unbilled());
@@ -76,6 +85,16 @@ export async function billingRoutes(
           s.saveDraft(db, p, randomUUID()),
         ),
       ),
+      201,
+    );
+  }
+  if (route === "invoices/from-charges" && method === "POST") {
+    const p = z
+      .object({ client_id: id, charge_ids: z.array(id).min(1).max(200) })
+      .strict()
+      .parse(await read(req));
+    return json(
+      await s.fromCharges(p.client_id, p.charge_ids, requestId(req)),
       201,
     );
   }

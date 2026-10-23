@@ -1,5 +1,11 @@
 "use client";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useRef,
+  type FormEvent,
+} from "react";
 import {
   request,
   requestKey,
@@ -8,12 +14,22 @@ import {
   type Contact,
   type Settings,
 } from "@/lib/client";
+import { AddChargesButton } from "@/features/expenses/ChargesQueue";
+import { todayIn, daysAfter as dueDate } from "@/lib/dates";
+import DocumentEmail from "@/features/email/DocumentEmail";
+import CreditsPanel from "./CreditsPanel";
+import QuoteOrigin from "./QuoteOrigin";
+import TaxControls, { useTaxProfiles, DocumentTaxPicker } from "./TaxControls";
 import { Dialog, Field, Tag } from "@/components/ui";
 import { money, parseDecimal } from "./money";
+import type { TaxComponent } from "./taxes";
 import type { Invoice, Line, Source, Payment } from "./model";
 type EditorLine = {
   key: string;
-  kind: "manual" | "time";
+  kind: "manual" | "time" | "charge";
+  charge_id?: string;
+  tax_components?: TaxComponent[];
+  tax_treatment?: "taxable" | "zero" | "exempt";
   description: string;
   quantity: string;
   unit: string;
@@ -44,22 +60,17 @@ function fromLine(l: Line): EditorLine {
     tax: (l.tax_bps / 100).toFixed(2),
     tax_label: l.tax_label,
     sources: l.source_snapshot,
+    charge_id: l.charge_snapshot?.[0]?.id,
+    tax_components:
+      l.tax_bps === 0 && l.tax_snapshot?.some((t) => t.rate_milli_percent > 0)
+        ? l.tax_snapshot.map(({ label, rate_milli_percent, compound }) => ({
+            label,
+            rate_milli_percent,
+            compound,
+          }))
+        : undefined,
+    tax_treatment: l.tax_treatment,
   };
-}
-export function todayIn(zone: string) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: zone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const get = (k: string) => parts.find((p) => p.type === k)!.value;
-  return `${get("year")}-${get("month")}-${get("day")}`;
-}
-function dueDate(day: string) {
-  const d = new Date(day + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + 30);
-  return d.toISOString().slice(0, 10);
 }
 export function groupSources(sources: Source[]): EditorLine[] {
   const groups = new Map<string, Source[]>();
@@ -95,6 +106,9 @@ export default function InvoiceEditor({
   onNavigate: (v: string, id?: string) => void;
   notify: (s: string) => void;
 }) {
+  const createKey = useRef<string | null>(null),
+    paymentKey = useRef<string | null>(null);
+  const taxProfiles = useTaxProfiles();
   const [invoice, setInvoice] = useState<Invoice | null>(null),
     [clientId, setClientId] = useState(clients[0]?.id || ""),
     [contactId, setContactId] = useState(""),
@@ -182,6 +196,8 @@ export default function InvoiceEditor({
             description: l.description,
             discount_bps: parseDecimal(l.discount),
             tax_bps: parseDecimal(l.tax),
+            ...(l.tax_components ? { tax_components: l.tax_components } : {}),
+            tax_treatment: l.tax_treatment || "taxable",
             tax_label: l.tax_label,
           };
           return l.kind === "manual"
@@ -190,7 +206,9 @@ export default function InvoiceEditor({
                 quantity: l.quantity,
                 unit_minor: parseDecimal(l.unit),
               }
-            : { ...common, source_ids: l.sources.map((s) => s.id) };
+            : l.kind === "charge"
+              ? { ...common, charge_id: l.charge_id }
+              : { ...common, source_ids: l.sources.map((s) => s.id) };
         }),
         ...(invoice ? { version: invoice.version } : {}),
       };
@@ -198,7 +216,7 @@ export default function InvoiceEditor({
         "invoices" + (invoice ? "/" + invoice.id : ""),
         invoice ? "PUT" : "POST",
         body,
-        invoice ? undefined : await requestKey(),
+        invoice ? undefined : (createKey.current ||= await requestKey()),
       );
       notify(
         "Draft saved. Totals were calculated on the server; selected time is reserved.",
@@ -269,7 +287,7 @@ export default function InvoiceEditor({
             reference: get("reference"),
             note: get("note"),
           },
-          await requestKey(),
+          (paymentKey.current ||= await requestKey()),
         );
         notify("Payment recorded. Issued totals and PDF are unchanged.");
       } else if (dialog === "reverse" && receipt) {
@@ -277,7 +295,7 @@ export default function InvoiceEditor({
           `invoices/${invoice.id}/payments/${receipt.id}/reverse`,
           "POST",
           { reason: get("reason") },
-          await requestKey(),
+          (paymentKey.current ||= await requestKey()),
         );
         notify("Receipt reversed. Original receipt remains in history.");
       } else if (dialog === "void") {
@@ -328,13 +346,21 @@ export default function InvoiceEditor({
             </>
           )}
           {invoice?.state === "issued" && invoice.balance_minor > 0 && (
-            <button className="primary" onClick={() => setDialog("payment")}>
+            <button
+              className="primary"
+              onClick={() => (
+                (paymentKey.current = null),
+                setDialog("payment")
+              )}
+            >
               Record payment
             </button>
           )}
-          {invoice?.state === "issued" && invoice.received_minor === 0 && (
-            <button onClick={() => setDialog("void")}>Void invoice</button>
-          )}
+          {invoice?.state === "issued" &&
+            invoice.received_minor === 0 &&
+            (invoice.credit_minor || 0) === 0 && (
+              <button onClick={() => setDialog("void")}>Void invoice</button>
+            )}
         </div>
       </div>
       {error && (
@@ -363,9 +389,10 @@ export default function InvoiceEditor({
                   <select
                     required
                     value={clientId}
+                    disabled={Boolean(invoice?.source_quote_id)}
                     onChange={(e) => {
                       if (
-                        lines.some((l) => l.kind === "time") &&
+                        lines.some((l) => l.kind !== "manual") &&
                         !confirm(
                           "Changing client removes selected time lines. Continue?",
                         )
@@ -438,13 +465,24 @@ export default function InvoiceEditor({
               </div>
               <div className="section-heading">
                 <h2>Invoice lines</h2>
+                <DocumentTaxPicker
+                  profiles={taxProfiles}
+                  onApply={(p) => {
+                    setLines((v) => v.map((l) => ({ ...l, ...p })));
+                    setDirty(true);
+                  }}
+                />
                 <span className="muted">CAD · tax exclusive</span>
               </div>
               {lines.map((l, index) => (
                 <fieldset className="invoice-line-form" key={l.key}>
                   <legend>
                     Line {index + 1} ·{" "}
-                    {l.kind === "time" ? "Recorded time" : "Manual item"}
+                    {l.kind === "time"
+                      ? "Recorded time"
+                      : l.kind === "charge"
+                        ? "Expense / travel charge"
+                        : "Manual item"}
                   </legend>
                   <Field label={`Line ${index + 1} description`}>
                     <textarea
@@ -457,7 +495,12 @@ export default function InvoiceEditor({
                       }
                     />
                   </Field>
-                  {l.kind === "time" ? (
+                  {l.kind === "charge" ? (
+                    <p className="muted">
+                      Full source charge · {money(parseDecimal(l.unit))}. Remove
+                      this line to release it.
+                    </p>
+                  ) : l.kind === "time" ? (
                     <p className="notice">
                       {l.sources.length} full time{" "}
                       {l.sources.length === 1 ? "entry" : "entries"} ·{" "}
@@ -529,7 +572,12 @@ export default function InvoiceEditor({
                         max="100"
                         step="0.01"
                         required
-                        disabled={!settings.tax_enabled && Number(l.tax) === 0}
+                        disabled={
+                          Boolean(l.tax_components) ||
+                          l.tax_treatment === "zero" ||
+                          l.tax_treatment === "exempt" ||
+                          (!settings.tax_enabled && Number(l.tax) === 0)
+                        }
                         value={l.tax}
                         onChange={(e) =>
                           changeLine(index, { tax: e.target.value })
@@ -540,6 +588,11 @@ export default function InvoiceEditor({
                       <Field label={`Line ${index + 1} tax label`}>
                         <input
                           maxLength={60}
+                          disabled={
+                            Boolean(l.tax_components) ||
+                            l.tax_treatment === "zero" ||
+                            l.tax_treatment === "exempt"
+                          }
                           value={l.tax_label}
                           onChange={(e) =>
                             changeLine(index, { tax_label: e.target.value })
@@ -548,6 +601,13 @@ export default function InvoiceEditor({
                       </Field>
                     )}
                   </div>
+                  <TaxControls
+                    prefix={`Line ${index + 1}`}
+                    profiles={taxProfiles}
+                    components={l.tax_components}
+                    treatment={l.tax_treatment}
+                    onChange={(p) => changeLine(index, p)}
+                  />
                   <div className="actions">
                     <button
                       type="button"
@@ -594,6 +654,25 @@ export default function InvoiceEditor({
                 >
                   Add unbilled time
                 </button>
+                <AddChargesButton
+                  clientId={clientId}
+                  exclude={lines.flatMap((l) =>
+                    l.charge_id ? [l.charge_id] : [],
+                  )}
+                  onAdd={(charges) => {
+                    setLines((v) => [
+                      ...v,
+                      ...charges.map((c) => ({
+                        ...manual(),
+                        kind: "charge" as const,
+                        description: c.description,
+                        unit: (Number(c.amount_minor) / 100).toFixed(2),
+                        charge_id: c.id,
+                      })),
+                    ]);
+                    setDirty(true);
+                  }}
+                />
               </div>
               <Field label="Customer-visible notes">
                 <textarea
@@ -736,7 +815,9 @@ export default function InvoiceEditor({
                 </div>
                 <div className="sum balance">
                   <span>
-                    {invoice.state === "void" ? "Voided total" : "Outstanding"}
+                    {invoice.state === "void"
+                      ? "Outstanding (voided)"
+                      : "Outstanding"}
                   </span>
                   <strong>{money(invoice.balance_minor)}</strong>
                 </div>
@@ -780,6 +861,7 @@ export default function InvoiceEditor({
                           <button
                             onClick={() => {
                               setReceipt(p);
+                              paymentKey.current = null;
                               setDialog("reverse");
                             }}
                           >
@@ -792,8 +874,8 @@ export default function InvoiceEditor({
                   <p className="muted">No payments recorded.</p>
                 )}
                 <small>
-                  Reversal corrects an erroneous receipt. Refunds and credit
-                  notes are not available yet.
+                  Reversal corrects an erroneous receipt. Credits and external
+                  refunds are recorded separately below.
                 </small>
               </section>
               <section className="card">
@@ -816,6 +898,29 @@ export default function InvoiceEditor({
                   </div>
                 ))}
               </section>
+            </>
+          )}
+          {invoice?.source_quote_id && (
+            <QuoteOrigin invoice={invoice} onNavigate={onNavigate} />
+          )}
+          {invoice && invoice.state !== "draft" && (
+            <>
+              <CreditsPanel
+                invoice={invoice}
+                timezone={settings.timezone}
+                onChanged={load}
+                notify={notify}
+              />
+              <DocumentEmail
+                timezone={settings.timezone}
+                canSend={invoice.state === "issued"}
+                kind="invoice"
+                id={invoice.id}
+                recipient={invoice.client_snapshot.email}
+                number={invoice.number!}
+                onSent={load}
+                notify={notify}
+              />
             </>
           )}
         </aside>
@@ -930,7 +1035,7 @@ export default function InvoiceEditor({
                   <p>
                     {dialog === "reverse"
                       ? `This adds a full reversal of ${money(receipt!.amount_minor)} and preserves the original receipt.`
-                      : "This preserves the original document and number, and releases its time entries for rebilling. Receipts must be reversed first."}
+                      : "This preserves the original document and number, and releases its source charges for rebilling. Net cash receipts and credits must both be zero."}
                   </p>
                   <Field label="Correction reason">
                     <textarea name="reason" maxLength={500} required />

@@ -1,6 +1,6 @@
 # SideDesk
 
-Self-hosted, single-owner freelance IT management. [Milestone 2 acceptance checklist](docs/milestone-2-checklist.md). Implemented through Milestone 2: clients, contacts, contextual notes, quick activities, persistent time tracking, encrypted credentials, structured jobs, private job files, unbilled work, invoice drafts, immutable issued PDFs and payments.
+Self-hosted, single-owner freelance IT management. [Milestone 3 acceptance checklist](docs/milestone-3-checklist.md). Implemented through Milestone 3: clients, contacts, contextual notes, quick activities, persistent time tracking, encrypted credentials, structured jobs, private job files, unbilled work, invoice drafts, immutable issued PDFs and payments, quote conversion, configurable tax profiles, SMTP history, expenses/receipts, travel charges and audited credits/refunds.
 
 **Do not enter actual client credentials until an independent security/cryptographic review is complete.** Tests do not constitute an audit. Ordinary HTTP use is supported; vault features fail closed when secure browser APIs are unavailable. A VPN does not replace TLS or protect against malicious JavaScript from a compromised host.
 
@@ -24,7 +24,7 @@ docker compose ps
 docker compose logs --tail=50 app migrate
 ```
 
-The migration service waits for PostgreSQL, applies checksummed non-destructive SQL migrations, then starts the app. Setup needs the one-use `SETUP_TOKEN`; create a login password of 14–256 characters. After ownership creation, public setup closes. Business identity, timezone (default America/Edmonton), CAD, and hourly rate are configured at setup. Configure remaining defaults and run storage/backup checks in Settings. Vault setup can be postponed indefinitely. SMTP is deferred to Milestone 3.
+The migration service waits for PostgreSQL, applies checksummed non-destructive SQL migrations, then starts the app. Setup needs the one-use `SETUP_TOKEN`; create a login password of 14–256 characters. After ownership creation, public setup closes. Business identity, timezone (default America/Edmonton), CAD, and hourly rate are configured at setup. Configure remaining defaults and run storage/backup checks in Settings. Vault setup can be postponed indefinitely. SMTP is optional; configure it in Settings when needed.
 
 No default owner credentials, vault keys, real client data, or production secrets are seeded. Remove `SETUP_TOKEN` from configuration after setup if desired. Keep `SESSION_SECRET`, database password and persistent volumes across updates. Session cookies use HttpOnly, SameSite=Strict, 30-minute idle/12-hour absolute expiry, and Secure when the configured origin is HTTPS. HTTP cannot provide transport confidentiality for account login or business data.
 
@@ -48,7 +48,7 @@ npm run build
 npm run test:e2e
 ```
 
-`npm test` starts disposable real PostgreSQL on loopback ports 55433–55435, runs integration, PDF and cryptographic tests, and stops it. `npm run test:e2e` starts its own PostgreSQL on 55432 and production app instances on 3100/3101. It uses a test-only local DNS mapping for `sidedesk.test` to prove insecure-origin restrictions. These test scripts contain fictional credentials only; never expose test ports publicly. Each acceptance run uses a fresh disposable cluster under `work/`; stop any interrupted test server before rerunning. Test artifacts go to `test-results/` and `playwright-report/`, both ignored by Git.
+`npm test` starts disposable real PostgreSQL on loopback ports 55433–55436, runs integration, PDF and cryptographic tests, and stops it. `npm run test:e2e` starts its own PostgreSQL on 55432 and production app instances on 3100/3101 and a disposable TLS SMTP fixture on 3110. The fixture generates its own local test certificate and never contacts real recipients. It uses a test-only local DNS mapping for `sidedesk.test` to prove insecure-origin restrictions. These test scripts contain fictional credentials only; never expose test ports publicly. Each acceptance run uses a fresh disposable cluster under `work/`; stop any interrupted test server before rerunning. Test artifacts go to `test-results/` and `playwright-report/`, both ignored by Git.
 
 For optional fictional demo records **after** owner creation on a demo deployment only:
 
@@ -56,7 +56,7 @@ For optional fictional demo records **after** owner creation on a demo deploymen
 docker compose exec -e ALLOW_FICTIONAL_SEED=yes app npm run db:seed
 ```
 
-This refuses nonempty client lists and requires owner setup. It creates fictional client/job/activity/time records and an invoice draft. Demo seeding never creates a default owner or vault.
+This refuses nonempty client lists and requires owner setup. It creates fictional client/job/activity/time records, quote/invoice drafts, an expense recovery and a manual trip. Demo seeding never creates a default owner or vault.
 
 ## Vault use and limits
 
@@ -96,15 +96,42 @@ In Sales → Unbilled select stopped entries for one client and create a draft. 
 
 Drafts support contact selection, manual lines, ordering, discounts and optional per-line taxes after enabling taxes in Settings. Configure business identity, terms, payment instructions, rounding scope and accent in Settings. Save to calculate exact server totals, preview Letter/A4, then issue. Number allocation, snapshots and PDF bytes commit together; render failure leaves the draft and sequence unchanged. Issued lines, identity, amounts and original PDF are immutable even after client/settings changes. Download always returns the exact issued bytes. The PDF shows received/balance **at issue**; current payments and balance appear on the invoice page.
 
-Record partial/full receipts with date, method and reference. Correct a mistaken receipt with an append-only full reversal and reason. This corrects bookkeeping; it does not initiate a bank refund. Overpayments are rejected. Voiding requires zero net receipts and a reason. Original PDFs remain unchanged; void state appears in the app history. Credits/refunds, quotes, SMTP, tax-rule configuration and expenses/travel are reserved for Milestone 3. No email or delivery state is fabricated.
+Record partial/full receipts with date, method and reference. Correct a mistaken receipt with an append-only full reversal and reason. This corrects bookkeeping; it does not initiate a bank refund. Overpayments are rejected. Voiding requires zero net receipts and a reason. Original PDFs remain unchanged; void state appears in the app history. Credits/refunds, quotes, SMTP, configurable taxes and expenses/travel are available as described below.
 
-Chromium is bundled with the Docker image; no external PDF service, CDN or runtime browser download is needed. Local development must run `npx playwright install chromium` before PDFs/tests. Optional `PDF_CHROMIUM_PATH` selects an installed compatible Chromium executable. Rendering disables JavaScript/network access, uses escaped server HTML and bounds concurrency/time. Issued PDF bytes live transactionally in PostgreSQL; job files live in the private upload volume. Backups include both, with an application-version manifest. M2 adds migration `0002`; rolling back to M1 against the M2 schema is unsupported. Restore a compatible pre-upgrade backup into a fresh deployment for rollback.
+Chromium is bundled with the Docker image; no external PDF service, CDN or runtime browser download is needed. Local development must run `npx playwright install chromium` before PDFs/tests. Optional `PDF_CHROMIUM_PATH` selects an installed compatible Chromium executable. Rendering disables JavaScript/network access, uses escaped server HTML and bounds concurrency/time. Issued PDF bytes live transactionally in PostgreSQL; job files live in the private upload volume. Backups include both, with an application-version manifest. M2 adds migration `0002`; M3 adds `0003`. Code downgrades against newer schemas are unsupported. Restore a compatible pre-upgrade backup into a fresh deployment for rollback.
+
+## Quotes, taxes and SMTP
+
+Sales → Quotes supports editable drafts with contacts, quantities, rates, discounts, notes and terms. Save and preview, then publish to assign a quote number and freeze the exact PDF and parties/prices/taxes. Publishing is separate from sending. Record explicit acceptance or decline with evidence; do not infer client acceptance from an email result. Expiry uses the business timezone. Revise an expired or changed quote into a new draft, retaining its predecessor and original document.
+
+An accepted quote can create a linked job and invoice. Conversion copies agreed prices and tax snapshots despite later rate/client/settings changes. Quote-derived invoices show their accepted reference and flag saved scope/price/tax differences before issue. There is one active invoice per quote; discarded drafts or void invoices retain history and permit a replacement. Conversion does not automatically reserve actual time or future stock. Review actual unbilled work explicitly to avoid charging both fixed scope and time for the same work.
+
+Settings → Tax profiles configures up to four named components, with three decimal places in percentage rates and optional compounding on earlier components. No registration or regional rate is assumed. Enable taxes to apply nonzero rates. Apply a profile to individual lines or explicitly to all draft lines, with zero-rated/exempt overrides. Components round half-up to cents per line, then sum. Saved component snapshots remain fixed until explicitly changed; editing a profile does not reprice existing documents. M2 manual rates remain supported. Disabling tax does not rewrite stored documents; re-enable taxes before saving edits to a taxed draft, or explicitly choose zero/exempt treatment.
+
+For authenticated SMTP, generate a **separate** random deployment key with `openssl rand -hex 32`, save it as `SMTP_ENCRYPTION_KEY` in `.env`, and recreate the app container. Keep this key outside backups alongside deployment secrets. It protects a versioned AES-256-GCM server-side password envelope, independent of the browser credential vault. Missing/wrong keys fail closed. To rotate it, preserve the old key until ready, configure a new dedicated key, then explicitly replace the saved SMTP password. Losing this deployment key does not change vault recovery; the SMTP password must be entered again.
+
+Configure host/port, verified implicit TLS or required STARTTLS, username/password and sender in Settings. A blank password retains the encrypted value. **Test saved SMTP connection** verifies connection/authentication and sends no email. Optional `SMTP_CA_FILE` identifies an operator-managed trusted private CA file inside the container; mount it read-only through a Compose override and preserve it separately. Certificate verification cannot be disabled. Plain mode is an explicit trusted local-relay option with no authentication; it cannot transmit a username/password. Opening SideDesk over ordinary HTTP still lacks browser-to-server transport confidentiality; use the existing HTTPS recommendation when handling sensitive settings.
+
+Email PDF opens a recipient/message confirmation form and attaches the exact published document. History distinguishes pending, failed, unknown and SMTP-accepted outcomes. Only confirmed server acceptance produces a sent status; inbox delivery is never claimed. Network ambiguity or a crash can leave an uncertain/pending attempt. Stable request keys prevent automatic duplicate submission. Check the mail server/history before explicitly starting another attempt. Backups restored with pending attempts **never auto-send**. No real emails are sent by automated tests.
+
+## Expenses, travel, credits and refunds
+
+Expenses records vendor, date, tax-inclusive CAD cost, included tax, category, payment method, optional client/job, contextual Markdown notes and private receipt files. Customer recovery is a separate before-invoice-tax amount; it is never copied from cost without an explicit choice. Business-only expenses create no invoice charge. Edits require a reason and retain append-only correction history. Allocated costs are locked. Archiving retains history/files and removes unallocated charges from the queue.
+
+Trips records manual distance to 0.001 km, optional origin/destination, purpose, duration, client/job, a chosen mileage rate and an independent travel labour rate/rounding increment. Mileage and labour are separate optional customer charges. No CRA rate or deductible mileage is assumed. These records do not create a second vendor expense. Linked jobs expose associated costs and trips.
+
+Unbilled charges in Expenses (also linked from Sales) groups recoveries and travel charges by client. Select full charges to create a draft, or add them to an existing invoice. Full-source allocations prevent duplicate billing and protect source facts. Discarding a draft or voiding its unpaid invoice releases them. Ordinary credits do not silently unbill source work. Receipt files use the same private owner-only 10 MB attachment policy as job files, not vault encryption.
+
+Invoice credits and refunds are append-only adjustments with reasons/dates/references and explicit reversals. A credit reduces the customer obligation and records any tax included in that credit; remaining total, pretax value and tax component are bounded independently. A refund records money already returned outside SideDesk and cannot exceed refundable customer credit or net receipts. Cash refunds do not apply a second tax credit. The app never initiates a bank transfer. Reversals preserve originals; reverse relevant refunds before reversing a receipt that would otherwise make net cash negative.
+
+Outstanding = max(issued total − credits − net cash, 0). Refundable customer credit = max(net cash − issued total + credits, 0). Net cash = receipts − receipt reversals − refunds + refund reversals. Original totals/PDFs never change. “Settled” distinguishes credit-adjusted completion; “refund due” highlights customer credit still owed. Dashboard net cash includes refunds and corrections, separately from costs and outstanding invoices. These are business records, not double-entry accounting or tax filings. Standalone credit-note PDFs, bank integration, foreign-currency conversion and comprehensive reports are not implemented.
 
 ## Milestones
 
 - M0: owner setup/auth, responsive themes/shell, PostgreSQL, Docker, CI, security architecture and backup.
 - M1: encrypted vault/recovery/TOTP, clients/contacts/notes, quick work and timer.
-- M2: jobs, private job files, unbilled queue, rate/rounding snapshots, invoice allocations/numbering, immutable PDFs and receipts.
-- Next, M3: quotes and conversion, SMTP history, configurable taxes, expenses/receipts, mileage/travel and auditable credits.
+- M2: jobs, private files, unbilled time, rate/rounding snapshots, invoice allocations/numbering, immutable PDFs and receipts.
+- M3: quotes/conversion, configurable tax components, SMTP history, expenses/receipts, mileage/travel charges and audited credits/refunds.
+- Next, M4: products, quantity lots and serialized stock, stock movements, repair/acquisition cost basis, serialized sales and client assets.
 
-Inventory, Expenses and Reports remain labelled future features. Read [the full specification](docs/SIDEDESK_SPEC.md), [security design](docs/threat-model.md), [implementation decisions](docs/implementation-decisions.md), and [M2 checklist](docs/milestone-2-checklist.md). The [M0/M1 checklist](docs/milestone-1-checklist.md) retains historical validation evidence.
+Inventory and Reports remain labelled future features. Read [the full specification](docs/SIDEDESK_SPEC.md), [security design](docs/threat-model.md), [implementation decisions](docs/implementation-decisions.md), [M3 design](docs/milestone-3-design.md), and [M3 checklist](docs/milestone-3-checklist.md). Earlier checklists retain their historical evidence. M4 requires a new confirmation.

@@ -1139,7 +1139,9 @@ dialog.drawer {
   padding-bottom: 12px;
   flex-wrap: wrap;
 }
-.tabs button[aria-selected="true"] {
+.tabs button[aria-selected="true"],
+.tabs button[aria-pressed="true"],
+.tabs button[aria-current="page"] {
   background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
@@ -1175,7 +1177,8 @@ dialog.drawer {
 .invoice-line-form .actions button {
   font-size: 11px;
 }
-.invoice-summary .sum {
+.invoice-summary .sum,
+dl.invoice-summary > div {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1319,4 +1322,44 @@ dialog.drawer {
     width: 100%;
     min-width: 0;
   }
+}
+.preserve {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.invoice-layout fieldset {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.invoice-layout legend {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.hash {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+.filters .field {
+  min-width: 180px;
+  flex: 1;
+}
+.invoice-layout > * {
+  min-width: 0;
+}
+
+dl.invoice-summary dd,
+dl.invoice-summary dt {
+  margin: 0;
 }

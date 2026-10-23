@@ -14,8 +14,9 @@ try {
 }
 const dbPassword = randomBytes(32).toString("hex"),
   sessionSecret = randomBytes(32).toString("hex"),
-  setup = randomBytes(32).toString("hex");
-const env = `APP_URL=http://localhost:3000\nAPP_BIND=127.0.0.1\nAPP_PORT=3000\nPOSTGRES_PASSWORD=${dbPassword}\nDATABASE_URL=postgresql://sidedesk:${dbPassword}@postgres:5432/sidedesk\nSESSION_SECRET=${sessionSecret}\nSETUP_TOKEN=${setup}\nFILE_STORAGE_PATH=/data/uploads\nBACKUP_DIR=/data/backups\nNEXT_TELEMETRY_DISABLED=1\n`;
+  setup = randomBytes(32).toString("hex"),
+  smtpKey = randomBytes(32).toString("hex");
+const env = `APP_URL=http://localhost:3000\nAPP_BIND=127.0.0.1\nAPP_PORT=3000\nPOSTGRES_PASSWORD=${dbPassword}\nDATABASE_URL=postgresql://sidedesk:${dbPassword}@postgres:5432/sidedesk\nSESSION_SECRET=${sessionSecret}\nSMTP_ENCRYPTION_KEY=${smtpKey}\nSETUP_TOKEN=${setup}\nFILE_STORAGE_PATH=/data/uploads\nBACKUP_DIR=/data/backups\nNEXT_TELEMETRY_DISABLED=1\n`;
 await writeFile(".env", env, { mode: 0o600 });
 async function docker(args: string[], quiet = false) {
   const r = await exec("docker", args, {
@@ -154,6 +155,126 @@ const fileResponse = await fetch(
 );
 assert.equal(fileResponse.status, 201);
 const jobFile = (await fileResponse.json()) as { id: string };
+
+// M3: frozen quote conversion, vendor cost versus recovery, mileage/time,
+// credits/refunds and a separately encrypted SMTP password survive restore.
+const quote = await call<{ id: string }>("quotes", "POST", {
+  client_id: client.id,
+  issue_date: "2030-01-01",
+  expiry_date: "2030-01-31",
+  lines: [
+    {
+      kind: "manual",
+      description: "Fictional Docker quoted service",
+      quantity: "1.125",
+      unit_minor: 10000,
+    },
+  ],
+});
+let q = await call<{ version: number }>("quotes/" + quote.id);
+await call("quotes/" + quote.id + "/publish", "POST", { version: q.version });
+q = await call("quotes/" + quote.id);
+await call("quotes/" + quote.id + "/decision", "POST", {
+  version: q.version,
+  state: "accepted",
+  reason: "Fictional Docker approval",
+});
+const quoteInvoice = await call<{ id: string }>(
+  "quotes/" + quote.id + "/convert",
+  "POST",
+  { target: "invoice" },
+);
+const quotePDFResponse = await fetch(
+  "http://localhost:3000/api/quotes/" + quote.id + "/pdf",
+  { headers: { cookie } },
+);
+assert.ok(quotePDFResponse.ok);
+const originalQuotePDF = Buffer.from(await quotePDFResponse.arrayBuffer());
+const expense = await call<{ id: string }>("expenses", "POST", {
+  vendor: "Fictional Docker vendor",
+  spent_on: "2030-01-01",
+  amount_minor: 10500,
+  tax_minor: 500,
+  category: "Supplies",
+  description: "Docker expense recovery",
+  client_id: client.id,
+  billable: true,
+  recovery_minor: 12000,
+});
+const trip = await call<{ id: string }>("trips", "POST", {
+  travelled_on: "2030-01-01",
+  purpose: "Fictional Docker visit",
+  distance_milli_km: 10125,
+  duration_seconds: 720,
+  mileage_rate_minor: 70,
+  time_rate_minor: 10000,
+  rounding_minutes: 15,
+  client_id: client.id,
+  billable_mileage: true,
+  billable_time: true,
+});
+const charges =
+  await call<
+    { id: string; expense_id: string | null; trip_id: string | null }[]
+  >("unbilled-charges");
+const chargeInvoice = await call<{ id: string }>(
+  "invoices/from-charges",
+  "POST",
+  {
+    client_id: client.id,
+    charge_ids: charges
+      .filter((c) => c.expense_id === expense.id || c.trip_id === trip.id)
+      .map((c) => c.id),
+  },
+);
+assert.equal(
+  (await call<{ total_minor: number }>("invoices/" + chargeInvoice.id))
+    .total_minor,
+  15209,
+);
+const receiptResponse = await fetch(
+  `http://localhost:3000/api/expenses/${expense.id}/files`,
+  {
+    method: "POST",
+    headers: {
+      cookie,
+      origin: "http://localhost:3000",
+      "x-csrf-token": csrf,
+      "content-type": "application/octet-stream",
+      "x-file-name": "fictional-receipt.txt",
+    },
+    body: "Fictional M3 receipt total CAD 105.00",
+  },
+);
+assert.equal(receiptResponse.status, 201);
+const receiptFile = (await receiptResponse.json()) as { id: string };
+await call("invoices/" + invoice.id + "/adjustments", "POST", {
+  kind: "credit",
+  amount_minor: 7000,
+  occurred_on: "2030-01-01",
+  reason: "Fictional Docker credit",
+});
+await call("invoices/" + invoice.id + "/adjustments", "POST", {
+  kind: "refund",
+  amount_minor: 1000,
+  occurred_on: "2030-01-01",
+  reason: "Fictional external refund recorded",
+  method: "cash",
+});
+await call("smtp", "PUT", {
+  version: 0,
+  host: "smtp.example.invalid",
+  port: 465,
+  security: "tls",
+  username: "fixture-owner",
+  password: "FICTIONAL_DOCKER_SMTP_PASSWORD",
+  from_address: "owner@example.invalid",
+  from_name: "Docker fixture",
+});
+assert.equal(
+  JSON.stringify(await call("smtp")).includes("FICTIONAL_DOCKER_SMTP_PASSWORD"),
+  false,
+);
 await call("backup", "POST", {});
 const backupDir = (
   await docker(
@@ -298,7 +419,7 @@ const restoredInvoice = await call<{
   balance_minor: number;
 }>("invoices/" + invoice.id);
 assert.equal(restoredInvoice.total_minor, 9000);
-assert.equal(restoredInvoice.balance_minor, 6000);
+assert.equal(restoredInvoice.balance_minor, 0);
 assert.equal((await pdfBytes()).equals(originalPDF), true);
 assert.equal(
   (await call<{ id: string }[]>("unbilled")).some(
@@ -313,6 +434,59 @@ const restoredFile = await fetch(
 );
 assert.equal(restoredFile.status, 200);
 assert.equal(await restoredFile.text(), "fictional upload fixture");
+
+const restoredQuote = await call<{ state: string; invoice_id: string }>(
+  "quotes/" + quote.id,
+);
+assert.equal(restoredQuote.state, "accepted");
+assert.equal(restoredQuote.invoice_id, quoteInvoice.id);
+assert.equal(
+  (await call<{ total_minor: number }>("invoices/" + quoteInvoice.id))
+    .total_minor,
+  11250,
+);
+const restoredQuoteResponse = await fetch(
+  "http://localhost:3000/api/quotes/" + quote.id + "/pdf",
+  { headers: { cookie } },
+);
+assert.ok(restoredQuoteResponse.ok);
+assert.equal(
+  Buffer.from(await restoredQuoteResponse.arrayBuffer()).equals(
+    originalQuotePDF,
+  ),
+  true,
+);
+assert.equal((await call<unknown[]>("unbilled-charges")).length, 0);
+const restoredReceipt = await fetch(
+  `http://localhost:3000/api/expenses/${expense.id}/files/${receiptFile.id}`,
+  { headers: { cookie } },
+);
+assert.ok(restoredReceipt.ok);
+assert.equal(
+  await restoredReceipt.text(),
+  "Fictional M3 receipt total CAD 105.00",
+);
+const financial = await call<{
+  received_minor: number;
+  credit_minor: number;
+  customer_credit_minor: number;
+}>("invoices/" + invoice.id);
+assert.equal(financial.received_minor, 2000);
+assert.equal(financial.credit_minor, 7000);
+assert.equal(financial.customer_credit_minor, 0);
+const smtp = await call<{ version: number; has_password: boolean }>("smtp");
+assert.equal(smtp.has_password, true);
+// Saving without a replacement password authenticates/decrypts the restored
+// envelope with the preserved deployment key, without contacting any host.
+await call("smtp", "PUT", {
+  version: smtp.version,
+  host: "smtp.example.invalid",
+  port: 465,
+  security: "tls",
+  username: "fixture-owner",
+  from_address: "owner@example.invalid",
+  from_name: "Restored fixture",
+});
 console.log(
-  "Docker fresh build, migration, jobs, invoice/PDF/payment allocations, consistent backup, fresh database/file restore, immutable PDF and vault recovery passed.",
+  "Docker fresh build, migration, jobs, invoice/PDF/payment allocations, quotes/conversion, expense receipts, travel charges, credits/refunds, encrypted SMTP settings, consistent backup, fresh database/file restore, immutable PDFs and vault recovery passed.",
 );

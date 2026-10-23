@@ -1,6 +1,6 @@
 # SideDesk: architecture, schema, security review, and Milestone 0 plan
 
-Prepared 23 October 2026. Status: historical pre-implementation proposal. Actual choices through M2 are recorded in [implementation decisions](implementation-decisions.md); this review remains preserved for context.
+Prepared 23 October 2026. Status: historical pre-implementation proposal. Actual choices through M3 are recorded in [implementation decisions](implementation-decisions.md); this review remains preserved for context.
 
 ## Source and repository findings
 

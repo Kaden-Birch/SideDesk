@@ -115,8 +115,12 @@ export async function requestKey() {
   return (await request<{ id: string }>("request-key")).id;
 }
 
-export async function uploadJobFile(jobId: string, file: File) {
-  const r = await fetch(`/api/jobs/${jobId}/files`, {
+export async function uploadJobFile(
+  jobId: string,
+  file: File,
+  context: "jobs" | "expenses" = "jobs",
+) {
+  const r = await fetch(`/api/${context}/${jobId}/files`, {
     method: "POST",
     credentials: "same-origin",
     headers: {

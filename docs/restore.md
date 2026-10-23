@@ -30,3 +30,11 @@ Use a separate checkout/Compose project and new volumes. Commands below assume t
 7. Record original application commit/version, backup timestamp, checksum results and success/failure without secret contents. Delete test deployment/volumes only after confirming they are the disposable project.
 
 CI's Docker smoke test automates a fresh database restore, file restoration, session revocation and decrypt/recovery verification with fictional values. Manual restore documentation does not by itself prove a run succeeded; see the milestone checklist for recorded evidence.
+
+## Milestone 3 restore additions
+
+Preserve the original `SMTP_ENCRYPTION_KEY` separately from the backup, and any operator-mounted `SMTP_CA_FILE`. Restore them before using authenticated SMTP. The restored settings API must still expose only password presence. A missing/wrong key must fail closed; it does not affect client-vault recovery. Explicitly re-entering the SMTP password can replace an unreadable envelope under a new key.
+
+Verify a published quote's exact PDF bytes, accepted state and active/historical conversion links; an issued invoice's original bytes, credits/tax components, refunds, outstanding and refundable balance; an expense receipt download and trip/expense full-charge allocations. Recover the original vault using its separate browser-held recovery credential as before.
+
+Inspect pending/unknown email attempts against the actual mail server. Restore never retries them automatically, and neither pending nor unknown proves the email was not delivered. Test connection/authentication before explicitly sending a new message; a connection test itself sends no email. Migration 0003 is additive but application downgrade to M2 is unsupported; rollback uses a compatible backup in a fresh deployment.

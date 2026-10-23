@@ -31,3 +31,24 @@ it("renders multipage A4 content with repeating table headings and page numbers"
     expect(Math.abs(size.height - 841.89)).toBeLessThan(1);
   }
 });
+it("renders a Letter quote with three-decimal tax components and expiry without invoice payment totals", async () => {
+  const { quoteFixture } = await import("./fixtures/quote");
+  const s = quoteFixture();
+  const html = invoiceHTML(s);
+  expect(html).toContain("<h1>QUOTE</h1>");
+  expect(html).toContain("Valid until");
+  expect(html).toContain("9.975%");
+  expect(html).not.toContain("Balance due at issue");
+  expect(html).not.toContain("Amount received at issue");
+  expect(
+    (await PDFDocument.load(await renderInvoicePDF(s))).getPageCount(),
+  ).toBe(1);
+});
+it("renders a multipage A4 quote with frozen component taxes and repeated table headers", async () => {
+  const { quoteFixture } = await import("./fixtures/quote");
+  const s = quoteFixture("A4", true);
+  const pdf = await PDFDocument.load(await renderInvoicePDF(s));
+  expect(pdf.getPageCount()).toBeGreaterThan(2);
+  for (const page of pdf.getPages())
+    expect(Math.abs(page.getSize().width - 595.28)).toBeLessThan(1);
+});

@@ -62,13 +62,17 @@ it("seeds a fictional job/time/draft after setup and refuses repeat seeding", as
       options,
     );
     const result = await pool().query(
-      "SELECT (SELECT count(*)::int FROM job) AS jobs,(SELECT count(*)::int FROM invoice WHERE state='draft') AS drafts,(SELECT count(*)::int FROM invoice_allocation) AS allocations,(SELECT count(*)::int FROM vault) AS vaults",
+      "SELECT (SELECT count(*)::int FROM job) AS jobs,(SELECT count(*)::int FROM invoice WHERE state='draft') AS drafts,(SELECT count(*)::int FROM invoice_allocation) AS allocations,(SELECT count(*)::int FROM vault) AS vaults,(SELECT count(*)::int FROM quote) AS quotes,(SELECT count(*)::int FROM expense) AS expenses,(SELECT count(*)::int FROM trip) AS trips,(SELECT count(*)::int FROM client_charge) AS charges",
     );
     expect(result.rows[0]).toEqual({
       jobs: 1,
       drafts: 1,
       allocations: 1,
       vaults: 0,
+      quotes: 1,
+      expenses: 1,
+      trips: 1,
+      charges: 1,
     });
     await expect(
       exec(process.execPath, ["--import", "tsx", "scripts/seed.ts"], options),

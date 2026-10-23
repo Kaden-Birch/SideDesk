@@ -3,6 +3,11 @@ import { z, ZodError } from "zod";
 import type { PoolClient } from "pg";
 import { config } from "./config";
 import { json, read, once } from "./http";
+import { expenseRoutes } from "@/features/expenses/routes";
+import { emailRoutes } from "@/features/email/routes";
+import { quoteRoutes } from "@/features/quotes/routes";
+import { adjustmentRoutes } from "@/features/billing/adjustments";
+import { taxRoutes } from "@/features/billing/tax-routes";
 import { billingRoutes } from "@/features/billing/routes";
 import { jobRoutes } from "@/features/jobs/routes";
 import { effective } from "@/features/work/service";
@@ -160,7 +165,13 @@ async function handle(req: Request, path: string[]) {
   requireValue(sess, 401, "Sign in to continue");
   if (method !== "GET") csrfCheck(req, sess.token);
   const featureResponse =
-    (await jobRoutes(req, path)) ?? (await billingRoutes(req, path));
+    (await expenseRoutes(req, path)) ??
+    (await emailRoutes(req, path)) ??
+    (await quoteRoutes(req, path)) ??
+    (await adjustmentRoutes(req, path)) ??
+    (await taxRoutes(req, path)) ??
+    (await jobRoutes(req, path)) ??
+    (await billingRoutes(req, path));
   if (featureResponse) return featureResponse;
   if (route === "request-key" && method === "GET")
     return json({ id: randomUUID() });
@@ -320,7 +331,10 @@ async function handle(req: Request, path: string[]) {
           clientId,
         ]);
         const pending = await db.query(
-          `SELECT EXISTS(SELECT 1 FROM time_entry t JOIN activity a ON a.id=t.activity_id WHERE a.client_id=$1 AND t.billable AND NOT EXISTS(SELECT 1 FROM invoice_allocation x WHERE x.time_entry_id=t.id AND x.released_at IS NULL)) OR EXISTS(SELECT 1 FROM invoice i WHERE i.client_id=$1 AND i.archived_at IS NULL AND (i.state='draft' OR (i.state='issued' AND i.total_minor>COALESCE((SELECT sum(CASE WHEN p.kind='receipt' THEN p.amount_minor ELSE -p.amount_minor END) FROM payment p WHERE p.invoice_id=i.id),0)))) AS blocked`,
+          `SELECT EXISTS(SELECT 1 FROM time_entry t JOIN activity a ON a.id=t.activity_id WHERE a.client_id=$1 AND t.billable AND NOT EXISTS(SELECT 1 FROM invoice_allocation x WHERE x.time_entry_id=t.id AND x.released_at IS NULL))
+ OR EXISTS(SELECT 1 FROM client_charge c WHERE c.client_id=$1 AND c.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM charge_allocation a WHERE a.charge_id=c.id AND a.released_at IS NULL))
+ OR EXISTS(SELECT 1 FROM invoice i JOIN invoice_financials f ON f.id=i.id WHERE i.client_id=$1 AND i.archived_at IS NULL AND (i.state='draft' OR (i.state='issued' AND (f.balance_minor>0 OR f.customer_credit_minor>0))))
+ OR EXISTS(SELECT 1 FROM quote q WHERE q.client_id=$1 AND q.archived_at IS NULL AND (q.state IN ('draft','published','sent') OR (q.state='accepted' AND NOT EXISTS(SELECT 1 FROM invoice WHERE source_quote_id=q.id) AND NOT EXISTS(SELECT 1 FROM job WHERE source_quote_id=q.id)))) AS blocked`,
           [clientId],
         );
         requireValue(
@@ -371,20 +385,29 @@ async function handle(req: Request, path: string[]) {
         client_id: id.nullable(),
         activity_id: id.nullable(),
         job_id: id.nullable().default(null),
+        expense_id: id.nullable().default(null),
         body: text(20000),
       })
       .strict()
       .refine(
         (v) =>
-          [v.client_id, v.activity_id, v.job_id].filter(Boolean).length === 1,
+          [v.client_id, v.activity_id, v.job_id, v.expense_id].filter(Boolean)
+            .length === 1,
       )
       .parse(await read(req));
     return json(
       (
         await transaction((db) =>
           db.query(
-            "INSERT INTO note(id,client_id,activity_id,job_id,body) VALUES($1,$2,$3,$4,$5) RETURNING *",
-            [randomUUID(), p.client_id, p.activity_id, p.job_id, p.body],
+            "INSERT INTO note(id,client_id,activity_id,job_id,expense_id,body) VALUES($1,$2,$3,$4,$5,$6) RETURNING *",
+            [
+              randomUUID(),
+              p.client_id,
+              p.activity_id,
+              p.job_id,
+              p.expense_id,
+              p.body,
+            ],
           ),
         )
       ).rows[0],

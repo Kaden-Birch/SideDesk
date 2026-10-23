@@ -5,8 +5,8 @@ const account = {
   password: "demo-owner-password-123!",
   setup: "test-bootstrap-token-for-local-tests-only-123456789",
 };
-async function login(page: Page) {
-  await page.goto("/");
+async function login(page: Page, url = "/") {
+  await page.goto(url);
   await expect(page.getByLabel("Login name")).toBeVisible();
   await page.getByLabel("Login name").fill(account.name);
   await page
@@ -665,6 +665,470 @@ test.describe.serial("Milestone 0 and 1 acceptance", () => {
     await expect(
       page.getByRole("heading", {
         name: "Vault unavailable in this browser context",
+      }),
+    ).toBeVisible();
+  });
+  test("Milestone 3 quote tax snapshots, SMTP outcomes, conversion and auditable credits/refunds", async ({
+    page,
+  }) => {
+    await login(page);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page
+      .getByRole("button", { name: "New tax profile", exact: true })
+      .click();
+    await page
+      .getByLabel("Tax profile name", { exact: true })
+      .fill("Fictional combined tax");
+    await page
+      .getByLabel("Tax component 1 label", { exact: true })
+      .fill("Configured GST");
+    await page
+      .getByLabel("Tax component 1 rate (%)", { exact: true })
+      .fill("5");
+    await page
+      .getByRole("button", { name: "Add tax component", exact: true })
+      .click();
+    await page
+      .getByLabel("Tax component 2 label", { exact: true })
+      .fill("Configured QST");
+    await page
+      .getByLabel("Tax component 2 rate (%)", { exact: true })
+      .fill("9.975");
+    await page
+      .getByRole("button", { name: "Save tax profile", exact: true })
+      .click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    async function configureSMTP(password: string) {
+      await page.getByLabel("SMTP host", { exact: true }).fill("127.0.0.1");
+      await page.getByLabel("SMTP port", { exact: true }).fill("3110");
+      await page
+        .getByLabel("SMTP transport security", { exact: true })
+        .selectOption("starttls");
+      await page
+        .getByLabel("SMTP username", { exact: true })
+        .fill("browser-fixture-owner");
+      await page.getByLabel("SMTP password", { exact: true }).fill(password);
+      await page
+        .getByLabel("Sender email", { exact: true })
+        .fill("owner@example.invalid");
+      await page
+        .getByLabel("Sender name", { exact: true })
+        .fill("Fictional Prairie Studio");
+      await page
+        .getByRole("button", { name: "Save SMTP settings", exact: true })
+        .click();
+      await expect(
+        page.getByLabel("SMTP password", { exact: true }),
+      ).toHaveValue("");
+    }
+    await configureSMTP("wrong-fictional-password");
+    await page.getByRole("button", { name: "Sales", exact: true }).click();
+    await page.getByRole("button", { name: "Quotes", exact: true }).click();
+    await page
+      .getByRole("button", { name: "+ New quote", exact: true })
+      .click();
+    await page
+      .getByLabel("Quote line 1 description", { exact: true })
+      .fill("Fictional installation service");
+    await page
+      .getByLabel("Quote line 1 unit rate (CAD)", { exact: true })
+      .fill("100");
+    await page
+      .getByLabel("Quote line 1 tax treatment", { exact: true })
+      .selectOption({ label: "Fictional combined tax" });
+    await page
+      .getByLabel("Quote terms", { exact: true })
+      .fill("Fictional scope accepted in writing.");
+    await page
+      .getByRole("button", { name: "Save quote draft", exact: true })
+      .click();
+    await expect(page.locator(".invoice-summary .grand")).toContainText(
+      "$114.98",
+    );
+    await page
+      .getByRole("button", { name: "Save quote draft", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Publish quote", exact: true }),
+    ).toBeEnabled();
+    page.once("dialog", (d) => d.accept());
+    await page
+      .getByRole("button", { name: "Publish quote", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "QUO-000001", exact: true }),
+    ).toBeVisible();
+    const quoteURL = page.url();
+    await page.getByLabel("Theme", { exact: true }).selectOption("dark");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement)?.blur();
+      window.scrollTo(0, 0);
+    });
+    await expect(page.locator(".toast")).toHaveCount(0);
+    await page.screenshot({
+      path: "test-results/quote-published-dark.png",
+      fullPage: true,
+    });
+    await page.getByLabel("Theme", { exact: true }).selectOption("light");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement)?.blur();
+      window.scrollTo(0, 0);
+    });
+    await page.screenshot({
+      path: "test-results/quote-published-phone.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    async function email() {
+      await page
+        .getByRole("button", { name: "Email PDF", exact: true })
+        .click();
+      await page
+        .getByLabel("Email recipient", { exact: true })
+        .fill("client@example.invalid");
+      await page
+        .getByLabel("I reviewed the recipient and existing email history.", {
+          exact: true,
+        })
+        .check();
+      await page.getByRole("button", { name: "Send PDF", exact: true }).click();
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+    }
+    await email();
+    await expect(page.getByText("failed", { exact: true })).toBeVisible();
+    await expect(page.locator(".page-heading .tag")).toHaveText("published");
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await configureSMTP("fictional-browser-smtp-password");
+    await page
+      .getByRole("button", { name: "Test saved SMTP connection", exact: true })
+      .click();
+    await expect(
+      page.getByText(
+        "SMTP connection and configured authentication accepted. No email was sent.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await page.goto(quoteURL);
+    await expect(
+      page.getByRole("heading", { name: "QUO-000001", exact: true }),
+    ).toBeVisible();
+    await email();
+    await expect(page.locator(".page-heading .tag")).toHaveText("sent");
+    await page
+      .getByRole("button", { name: "Record acceptance", exact: true })
+      .click();
+    await page
+      .getByLabel("Quote decision evidence or reason", { exact: true })
+      .fill("Fictional written approval received.");
+    await page
+      .getByRole("button", { name: "Confirm quote decision", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", {
+        name: "Create invoice from quote",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Create job from quote", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Work from QUO-000001", exact: true }),
+    ).toBeVisible();
+    await page.goto(quoteURL);
+    await page
+      .getByRole("button", { name: "Create invoice from quote", exact: true })
+      .click();
+    await expect(
+      page.getByText("Saved invoice lines match the accepted quote.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(page.locator(".invoice-summary .grand")).toContainText(
+      "$114.98",
+    );
+    page.once("dialog", (d) => d.accept());
+    await page
+      .getByRole("button", { name: "Issue invoice", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "INV-000003", exact: true }),
+    ).toBeVisible();
+    const pdfURL = (await page
+      .getByRole("link", { name: "Download original PDF", exact: true })
+      .getAttribute("href"))!;
+    const before = await (await page.request.get(pdfURL)).body();
+    await page
+      .getByRole("button", { name: "Record payment", exact: true })
+      .click();
+    await page.getByLabel("Payment amount (CAD)", { exact: true }).fill("100");
+    await page
+      .getByRole("button", { name: "Save payment", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Add credit", exact: true }).click();
+    await page.getByLabel("Credit amount (CAD)", { exact: true }).fill("30");
+    await page
+      .getByLabel("Adjustment reason", { exact: true })
+      .fill("Fictional agreed service reduction.");
+    await page
+      .getByRole("button", { name: "Record credit", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Record refund", exact: true }),
+    ).toBeEnabled();
+    await page
+      .getByRole("button", { name: "Record refund", exact: true })
+      .click();
+    await page.getByLabel("Refund amount (CAD)", { exact: true }).fill("15.02");
+    await page
+      .getByLabel("Adjustment reason", { exact: true })
+      .fill("Fictional cash refund already returned.");
+    await page
+      .getByLabel("The money was returned outside SideDesk.", { exact: true })
+      .check();
+    await page
+      .getByRole("button", { name: "Confirm recorded refund", exact: true })
+      .click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator(".page-heading .tag")).toHaveText("settled");
+    expect((await (await page.request.get(pdfURL)).body()).equals(before)).toBe(
+      true,
+    );
+    for (const kind of ["refund", "credit"]) {
+      await page
+        .getByRole("button", { name: "Reverse " + kind, exact: true })
+        .click();
+      await page
+        .getByLabel("Adjustment reason", { exact: true })
+        .fill("Fictional " + kind + " bookkeeping correction.");
+      await page
+        .getByRole("button", { name: "Confirm reversal", exact: true })
+        .click();
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+    }
+    await page
+      .getByRole("button", { name: "Reverse receipt", exact: true })
+      .click();
+    await page
+      .getByLabel("Correction reason", { exact: true })
+      .fill("Fictional receipt did not occur.");
+    await page
+      .getByRole("button", { name: "Confirm receipt reversal", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Void invoice", exact: true })
+      .click();
+    await page
+      .getByLabel("Correction reason", { exact: true })
+      .fill("Fictional void after corrected financial events.");
+    await page
+      .getByRole("button", { name: "Confirm void", exact: true })
+      .click();
+    await expect(page.locator(".page-heading .tag")).toHaveText("void");
+    await expect(
+      page.getByRole("button", { name: "Email PDF", exact: true }),
+    ).toBeDisabled();
+    const ledger = page.locator("section.card").filter({
+      has: page.getByRole("heading", {
+        name: "Credits & refunds",
+        exact: true,
+      }),
+    });
+    await expect(
+      ledger.getByText("Fictional agreed service reduction.", { exact: true }),
+    ).toBeVisible();
+    expect((await (await page.request.get(pdfURL)).body()).equals(before)).toBe(
+      true,
+    );
+    await page.goto(quoteURL);
+    await page
+      .getByRole("button", { name: "Create invoice from quote", exact: true })
+      .click();
+    await expect(
+      page.getByText("Saved invoice lines match the accepted quote.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+  });
+  test("Milestone 3 expenses, private receipts and mileage/time charges work on ordinary HTTP", async ({
+    page,
+  }) => {
+    await login(page, "http://sidedesk.test:3101");
+    await page.getByRole("button", { name: "Expenses", exact: true }).click();
+    await page
+      .getByRole("button", { name: "+ New expense", exact: true })
+      .click();
+    await page
+      .getByLabel("Expense vendor", { exact: true })
+      .fill("Fictional parts supplier");
+    await page
+      .getByLabel("Expense total including tax (CAD)", { exact: true })
+      .fill("105");
+    await page
+      .getByLabel("Tax included in expense (CAD)", { exact: true })
+      .fill("5");
+    await page
+      .getByLabel("Expense description", { exact: true })
+      .fill("Fictional replacement cable");
+    await page
+      .getByLabel("Cost client (optional)", { exact: true })
+      .selectOption({ label: "Prairie Demo Studio" });
+    await page
+      .getByLabel("Cost job (optional)", { exact: true })
+      .selectOption({ label: "Work from QUO-000001" });
+    await page
+      .getByLabel("Create a separate billable recovery charge", { exact: true })
+      .check();
+    await page
+      .getByLabel("Customer recovery amount before invoice tax (CAD)", {
+        exact: true,
+      })
+      .fill("120");
+    await page
+      .getByRole("button", { name: "Save expense", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", {
+        name: "Fictional parts supplier",
+        exact: true,
+      }),
+    ).toBeVisible();
+    const expenseURL = page.url();
+    await page
+      .getByLabel("Upload expense receipt", { exact: true })
+      .setInputFiles({
+        name: "fictional-receipt.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("Fictional receipt total CAD 105.00"),
+      });
+    await expect(
+      page.getByRole("link", { name: "fictional-receipt.txt", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByLabel("New expense note", { exact: true })
+      .fill("**Fictional** receipt checked.");
+    await page
+      .getByRole("button", { name: "Add expense note", exact: true })
+      .click();
+    await expect(page.locator(".markdown")).toContainText("receipt checked.");
+    await page.getByRole("button", { name: "+ New trip", exact: true }).click();
+    await page
+      .getByLabel("Trip purpose", { exact: true })
+      .fill("Fictional service trip");
+    await page.getByLabel("Distance (km)", { exact: true }).fill("10.125");
+    await page
+      .getByLabel("Travel duration (minutes)", { exact: true })
+      .fill("12");
+    await page
+      .getByLabel("Customer mileage rate (CAD/km)", { exact: true })
+      .fill("0.70");
+    await page
+      .getByLabel("Customer travel labour rate (CAD/hour)", { exact: true })
+      .fill("100");
+    await page
+      .getByLabel("Travel time rounding (minutes)", { exact: true })
+      .selectOption("15");
+    await page
+      .getByLabel("Cost client (optional)", { exact: true })
+      .selectOption({ label: "Prairie Demo Studio" });
+    await page
+      .getByLabel("Cost job (optional)", { exact: true })
+      .selectOption({ label: "Work from QUO-000001" });
+    await page
+      .getByLabel("Create a billable mileage charge", { exact: true })
+      .check();
+    await page
+      .getByLabel("Create a separate billable travel labour charge", {
+        exact: true,
+      })
+      .check();
+    await page.getByRole("button", { name: "Save trip", exact: true }).click();
+    await expect(
+      page.getByRole("heading", {
+        name: "Fictional service trip",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "View unbilled charges", exact: true })
+      .click();
+    await page
+      .getByLabel("Select charge Fictional replacement cable", { exact: true })
+      .check();
+    await page
+      .getByLabel("Select charge Mileage - Fictional service trip", {
+        exact: true,
+      })
+      .check();
+    await page
+      .getByLabel("Select charge Travel time - Fictional service trip", {
+        exact: true,
+      })
+      .check();
+    await page.getByLabel("Theme", { exact: true }).selectOption("dark");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.getByLabel("Theme", { exact: true }).selectOption("light");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement)?.blur();
+      window.scrollTo(0, 0);
+    });
+    await expect(page.locator(".toast")).toHaveCount(0);
+    await page.screenshot({
+      path: "test-results/expense-charges-phone.png",
+      fullPage: true,
+    });
+    await page
+      .getByRole("button", { name: "Create draft from charges", exact: true })
+      .click();
+    await expect(page.locator(".invoice-summary .grand")).toContainText(
+      "$152.09",
+    );
+    await page.getByRole("button", { name: "Save draft", exact: true }).click();
+    page.once("dialog", (d) => d.accept());
+    await page
+      .getByRole("button", { name: "Issue invoice", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "INV-000004", exact: true }),
+    ).toBeVisible();
+    await page.goto(expenseURL);
+    await expect(
+      page.getByRole("button", { name: "Edit expense", exact: true }),
+    ).toBeDisabled();
+    await page
+      .getByRole("button", { name: "Open linked job", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: /Fictional parts supplier.*cost/ }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /Fictional service trip.*km/ }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Open navigation", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Credentials", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", {
+        name: "Vault unavailable in this browser context",
+        exact: true,
       }),
     ).toBeVisible();
   });

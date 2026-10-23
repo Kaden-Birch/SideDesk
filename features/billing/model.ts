@@ -1,4 +1,6 @@
+import type { Charge } from "@/features/expenses/service";
 import { z } from "zod";
+import { taxComponents, type TaxSnapshot } from "./taxes";
 import { id, text, rate } from "@/lib/validation";
 export const minor = z.number().int().min(0).max(1000000000);
 export const date = z
@@ -13,6 +15,8 @@ const lineBase = {
   discount_bps: z.number().int().min(0).max(10000).default(0),
   tax_bps: z.number().int().min(0).max(10000).default(0),
   tax_label: z.string().trim().max(60).default("Tax"),
+  tax_components: taxComponents.optional(),
+  tax_treatment: z.enum(["taxable", "zero", "exempt"]).optional(),
 };
 export const lineInput = z.discriminatedUnion("kind", [
   z
@@ -33,6 +37,7 @@ export const lineInput = z.discriminatedUnion("kind", [
       source_ids: z.array(id).min(1).max(250),
     })
     .strict(),
+  z.object({ ...lineBase, kind: z.literal("charge"), charge_id: id }).strict(),
 ]);
 export const draftInput = z
   .object({
@@ -107,7 +112,10 @@ export type Source = {
 };
 export type Line = {
   id: string;
-  kind: "manual" | "time";
+  kind: "manual" | "time" | "charge";
+  charge_snapshot?: Charge[];
+  tax_snapshot?: TaxSnapshot[];
+  tax_treatment?: "taxable" | "zero" | "exempt";
   description: string;
   quantity: string;
   unit_minor: number;
@@ -124,6 +132,7 @@ export type Line = {
 };
 export type InvoiceSnapshot = {
   format: 1;
+  document_kind?: "INVOICE" | "QUOTE";
   number: string;
   issue_date: string;
   due_date: string;
@@ -167,6 +176,10 @@ export type Invoice = {
   balance_minor: number;
   pdf_sha256: string | null;
   void_reason: string | null;
+  source_quote_id?: string | null;
+  credit_minor?: number;
+  credit_tax_minor?: number;
+  customer_credit_minor?: number;
   lines: Line[];
   payments: Payment[];
   events: { id: string; type: string; summary: string; created_at: string }[];

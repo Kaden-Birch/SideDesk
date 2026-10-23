@@ -22,6 +22,10 @@ import SalesPanel, {
   BillingOverview,
 } from "@/features/billing/SalesPanel";
 import JobsPanel from "@/features/jobs/JobsPanel";
+import QuotesPanel from "@/features/quotes/QuotesPanel";
+import ExpensesPanel from "@/features/expenses/ExpensesPanel";
+import TaxSettings from "@/features/billing/TaxSettings";
+import SMTPSettings from "@/features/email/SMTPSettings";
 import BusinessProfile from "@/features/billing/BusinessProfile";
 import { parseDecimal } from "@/features/billing/money";
 import type { Job } from "@/features/billing/model";
@@ -179,6 +183,8 @@ export default function SideDesk() {
           "work",
           "jobs",
           "sales",
+          "quotes",
+          "expenses",
           "credentials",
           "settings",
         ].includes(v)
@@ -672,6 +678,7 @@ export default function SideDesk() {
             ["clients", "♧", "Clients"],
             ["work", "◷", "Work"],
             ["sales", "▤", "Sales"],
+            ["expenses", "▧", "Expenses"],
             ["credentials", "⌑", "Credentials"],
             ["settings", "⚙", "Settings"],
           ].map(([key, icon, label]) => (
@@ -679,13 +686,17 @@ export default function SideDesk() {
               key={key}
               title={label}
               className={
-                view === key || (key === "work" && view === "jobs")
+                view === key ||
+                (key === "work" && view === "jobs") ||
+                (key === "sales" && view === "quotes")
                   ? "active"
                   : ""
               }
               onClick={() => navigate(key)}
               aria-current={
-                view === key || (key === "work" && view === "jobs")
+                view === key ||
+                (key === "work" && view === "jobs") ||
+                (key === "sales" && view === "quotes")
                   ? "page"
                   : undefined
               }
@@ -699,7 +710,7 @@ export default function SideDesk() {
         </nav>
         <div className="roadmap">
           <p className="nav-label">COMING IN LATER MILESTONES</p>
-          <span>Quotes · Inventory · Expenses · Reports</span>
+          <span>Inventory · Reports</span>
         </div>
         <div className="sidebar-footer">
           <button
@@ -738,6 +749,8 @@ export default function SideDesk() {
                   work: "Work",
                   jobs: "Work / Jobs",
                   sales: "Sales",
+                  quotes: "Sales / Quotes",
+                  expenses: "Expenses",
                   credentials: "Credentials",
                   settings: "Settings",
                 }[view]
@@ -755,6 +768,18 @@ export default function SideDesk() {
               <summary>+ New</summary>
               <div>
                 <button onClick={openClients}>Client</button>
+                <button
+                  disabled={!clients.length}
+                  onClick={() => navigate("quotes", "new")}
+                >
+                  Quote
+                </button>
+                <button onClick={() => navigate("expenses", "new")}>
+                  Expense
+                </button>
+                <button onClick={() => navigate("expenses", "new-trip")}>
+                  Trip
+                </button>
                 <button
                   disabled={!clients.length}
                   onClick={() => navigate("jobs", "new")}
@@ -943,8 +968,9 @@ export default function SideDesk() {
                     </li>
                   </ul>
                   <p className="muted">
-                    Financial reporting, quotes and invoices arrive in later
-                    milestones.
+                    Comprehensive financial reports arrive in a later milestone.
+                    Quotes, invoices and expenses are available from the
+                    navigation.
                   </p>
                   <button onClick={() => navigate("credentials")}>
                     {state.vault_initialized
@@ -1450,6 +1476,26 @@ export default function SideDesk() {
               notify={notify}
             />
           )}
+          {view === "quotes" && (
+            <QuotesPanel
+              key={recordId}
+              clients={clients}
+              settings={state.settings}
+              recordId={recordId}
+              onNavigate={navigate}
+              notify={notify}
+            />
+          )}
+          {view === "expenses" && (
+            <ExpensesPanel
+              key={recordId}
+              clients={clients}
+              settings={state.settings}
+              recordId={recordId}
+              onNavigate={navigate}
+              notify={notify}
+            />
+          )}
           {view === "settings" && (
             <>
               <div className="page-heading">
@@ -1597,13 +1643,15 @@ export default function SideDesk() {
                       </p>
                     )}
                     <p className="muted">
-                      SMTP is optional and will be added in Milestone 3. Restore
-                      is an operator procedure documented in the repository.
+                      SMTP is optional; configure and test it below. Restore is
+                      an operator procedure documented in the repository.
                     </p>
                   </section>
                 </div>
               </div>
               <div className="settings-extra">
+                <TaxSettings notify={notify} />
+                <SMTPSettings notify={notify} />
                 <BusinessProfile
                   settings={state.settings}
                   onSaved={refresh}

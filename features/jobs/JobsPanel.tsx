@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Markdown from "react-markdown";
+import JobCosts from "@/features/expenses/JobCosts";
 import JobFiles from "./JobFiles";
 import {
   request,
@@ -375,6 +376,7 @@ export default function JobsPanel({
                 </p>
               ))}
             </section>
+            <JobCosts jobId={job.id} onNavigate={onNavigate} />
             <JobFiles jobId={job.id} notify={notify} />
             <section className="card">
               <h2>Job notes</h2>

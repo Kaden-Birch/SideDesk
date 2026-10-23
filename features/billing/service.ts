@@ -13,6 +13,7 @@ import type {
   Invoice,
 } from "./model";
 import { renderInvoicePDF } from "./pdf";
+import { calculateTaxes } from "./taxes";
 export async function invoiceEvent(
   db: PoolClient,
   invoiceId: string,
@@ -41,6 +42,9 @@ const numericFields = [
   "received_minor",
   "balance_minor",
   "unit_minor",
+  "credit_minor",
+  "credit_tax_minor",
+  "customer_credit_minor",
 ];
 function numbers<T>(row: T): T {
   const r = row as Record<string, unknown>;
@@ -54,19 +58,31 @@ export function invoiceState(
     balance_minor: number;
     received_minor: number;
     due_date: string;
+    credit_minor?: number;
+    smtp_accepted?: boolean;
+    customer_credit_minor?: number;
   },
   today: string,
 ) {
   if (i.state !== "issued") return i.state;
-  if (i.balance_minor === 0) return "paid";
+  if (i.balance_minor === 0)
+    return (i.customer_credit_minor || 0) > 0
+      ? "refund_due"
+      : i.credit_minor
+        ? "settled"
+        : "paid";
   if (i.due_date < today) return "overdue";
-  return i.received_minor > 0 ? "partially_paid" : "issued";
+  return i.received_minor > 0
+    ? "partially_paid"
+    : i.smtp_accepted
+      ? "sent"
+      : "issued";
 }
 export async function listInvoices() {
   const { rows } = await pool()
     .query(`SELECT i.id,i.client_id,c.name AS client_name,i.state,i.number,i.issue_date::text,i.due_date::text,i.currency,i.total_minor,i.version,i.created_at,
- COALESCE(p.net,0) AS received_minor,i.total_minor-COALESCE(p.net,0) AS balance_minor,
- (now() AT TIME ZONE b.timezone)::date::text AS today FROM invoice i JOIN client c ON c.id=i.client_id CROSS JOIN business_settings b LEFT JOIN LATERAL(SELECT sum(CASE WHEN kind='receipt' THEN amount_minor ELSE -amount_minor END) AS net FROM payment WHERE invoice_id=i.id)p ON true WHERE i.archived_at IS NULL ORDER BY i.created_at DESC`);
+ f.net_cash_minor AS received_minor,CASE WHEN i.state='void' THEN 0 ELSE f.balance_minor END AS balance_minor,f.credit_minor,f.customer_credit_minor,f.credit_tax_minor,EXISTS(SELECT 1 FROM email_attempt a JOIN email_result r ON r.attempt_id=a.id WHERE a.invoice_id=i.id AND r.outcome='accepted') AS smtp_accepted,
+ (now() AT TIME ZONE b.timezone)::date::text AS today FROM invoice i JOIN client c ON c.id=i.client_id CROSS JOIN business_settings b JOIN invoice_financials f ON f.id=i.id WHERE i.archived_at IS NULL ORDER BY i.created_at DESC`);
   return rows.map((r) => {
     numbers(r);
     return { ...r, status: invoiceState(r, r.today) };
@@ -74,9 +90,9 @@ export async function listInvoices() {
 }
 export async function getInvoice(id: string) {
   const { rows } = await pool().query(
-    `SELECT i.id,i.client_id,c.name AS client_name,i.state,i.number,i.issue_date::text,i.due_date::text,i.paper,i.currency,i.issuer_snapshot,i.client_snapshot,i.notes,i.terms,i.subtotal_minor,i.discount_minor,i.tax_minor,i.total_minor,i.version,i.pdf_sha256,i.void_reason,
- COALESCE(p.net,0) AS received_minor,i.total_minor-COALESCE(p.net,0) AS balance_minor,(now() AT TIME ZONE b.timezone)::date::text AS today
- FROM invoice i JOIN client c ON c.id=i.client_id CROSS JOIN business_settings b LEFT JOIN LATERAL(SELECT sum(CASE WHEN kind='receipt' THEN amount_minor ELSE -amount_minor END) AS net FROM payment WHERE invoice_id=i.id)p ON true WHERE i.id=$1 AND i.archived_at IS NULL`,
+    `SELECT i.id,i.client_id,c.name AS client_name,i.state,i.number,i.issue_date::text,i.due_date::text,i.paper,i.currency,i.issuer_snapshot,i.client_snapshot,i.notes,i.terms,i.subtotal_minor,i.discount_minor,i.tax_minor,i.total_minor,i.version,i.pdf_sha256,i.void_reason,i.source_quote_id,
+ f.net_cash_minor AS received_minor,CASE WHEN i.state='void' THEN 0 ELSE f.balance_minor END AS balance_minor,f.credit_minor,f.customer_credit_minor,f.credit_tax_minor,EXISTS(SELECT 1 FROM email_attempt a JOIN email_result r ON r.attempt_id=a.id WHERE a.invoice_id=i.id AND r.outcome='accepted') AS smtp_accepted,(now() AT TIME ZONE b.timezone)::date::text AS today
+ FROM invoice i JOIN client c ON c.id=i.client_id CROSS JOIN business_settings b JOIN invoice_financials f ON f.id=i.id WHERE i.id=$1 AND i.archived_at IS NULL`,
     [id],
   );
   requireValue(rows[0], 404, "Invoice not found");
@@ -138,9 +154,13 @@ async function lockSources(
   }
   return new Map(rows.map((r) => [r.id, r as Source]));
 }
-function workLine(
+function rawWorkLine(
   input: DraftInput["lines"][number],
   sources: Map<string, Source>,
+  charges: Map<
+    string,
+    import("@/features/expenses/service").Charge
+  > = new Map(),
 ): Line {
   const common = {
     id: randomUUID(),
@@ -150,6 +170,25 @@ function workLine(
     tax_bps: input.tax_bps,
     tax_label: input.tax_label || "Tax",
   };
+  if (input.kind === "charge") {
+    const c = charges.get(input.charge_id);
+    requireValue(c, 400, "Choose an available charge");
+    return {
+      ...common,
+      quantity: "1",
+      unit_minor: Number(c.amount_minor),
+      ...manualAmounts(
+        "1",
+        Number(c.amount_minor),
+        input.discount_bps,
+        input.tax_bps,
+      ),
+      original_seconds: null,
+      billable_seconds: null,
+      source_snapshot: [],
+      charge_snapshot: [c],
+    };
+  }
   if (input.kind === "manual")
     return {
       ...common,
@@ -206,6 +245,133 @@ function workLine(
     source_snapshot: entries,
   };
 }
+export function workLine(
+  input: DraftInput["lines"][number],
+  sources: Map<string, Source>,
+  charges: Map<
+    string,
+    import("@/features/expenses/service").Charge
+  > = new Map(),
+): Line {
+  const line = rawWorkLine(input, sources, charges);
+  const treatment = input.tax_treatment || "taxable";
+  const components =
+    treatment === "taxable"
+      ? input.tax_components || [
+          {
+            label: input.tax_label || "Tax",
+            rate_milli_percent: input.tax_bps * 10,
+            compound: false,
+          },
+        ]
+      : [];
+  const taxes = calculateTaxes(
+    line.subtotal_minor - line.discount_minor,
+    components,
+  );
+  const tax = taxes.reduce((n, t) => n + t.amount_minor, 0);
+  return {
+    ...line,
+    tax_treatment: treatment,
+    tax_snapshot: taxes,
+    tax_bps: input.tax_components
+      ? 0
+      : treatment === "taxable"
+        ? input.tax_bps
+        : 0,
+    tax_label:
+      treatment === "taxable"
+        ? components
+            .map((c) => c.label)
+            .join(" + ")
+            .slice(0, 60)
+        : treatment === "zero"
+          ? "Zero-rated"
+          : "Exempt",
+    tax_minor: tax,
+    total_minor: safeMinor(
+      BigInt(line.subtotal_minor - line.discount_minor + tax),
+    ),
+  };
+}
+async function lockCharges(
+  db: PoolClient,
+  ids: string[],
+  clientId: string,
+  invoiceId: string,
+) {
+  requireValue(
+    new Set(ids).size === ids.length,
+    400,
+    "A charge may appear only once per invoice",
+  );
+  const rows = (
+    await db.query(
+      "SELECT * FROM client_charge WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+      [ids],
+    )
+  ).rows as import("@/features/expenses/service").Charge[];
+  requireValue(rows.length === ids.length, 400, "Charge not found");
+  for (const row of rows) {
+    requireValue(
+      row.client_id === clientId &&
+        !(row as typeof row & { archived_at?: string }).archived_at,
+      400,
+      "Choose active charges for this client",
+    );
+    const allocation = (
+      await db.query(
+        "SELECT invoice_id FROM charge_allocation WHERE charge_id=$1 AND released_at IS NULL",
+        [row.id],
+      )
+    ).rows[0];
+    requireValue(
+      !allocation || allocation.invoice_id === invoiceId,
+      409,
+      "Charge is already reserved or billed",
+    );
+  }
+  return new Map(rows.map((r) => [r.id, r]));
+}
+export async function fromCharges(
+  clientId: string,
+  ids: string[],
+  key: string,
+) {
+  return transaction((db) =>
+    once(db, key, "invoice-from-charges", { clientId, ids }, async () => {
+      const invoiceId = randomUUID(),
+        charges = await lockCharges(db, ids, clientId, invoiceId);
+      requireValue(ids.length > 0, 400, "Choose charges to invoice");
+      const b = (
+        await db.query(
+          "SELECT invoice_terms,(now() AT TIME ZONE timezone)::date::text AS today,((now() AT TIME ZONE timezone)::date+30)::text AS due FROM business_settings",
+        )
+      ).rows[0];
+      return saveDraft(
+        db,
+        {
+          client_id: clientId,
+          contact_id: null,
+          issue_date: b.today,
+          due_date: b.due,
+          paper: "Letter",
+          notes: "",
+          terms: b.invoice_terms,
+          lines: [...charges.values()].map((c) => ({
+            kind: "charge",
+            charge_id: c.id,
+            description: c.description,
+            discount_bps: 0,
+            tax_bps: 0,
+            tax_label: "Tax",
+          })),
+        },
+        invoiceId,
+      );
+    }),
+  );
+}
 export async function saveDraft(
   db: PoolClient,
   input: DraftInput,
@@ -240,7 +406,14 @@ export async function saveDraft(
   requireValue(c && !c.archived_at, 400, "Choose an active client");
   const b = (await db.query("SELECT * FROM business_settings")).rows[0];
   requireValue(
-    b.tax_enabled || input.lines.every((l) => l.tax_bps === 0),
+    b.tax_enabled ||
+      input.lines.every(
+        (l) =>
+          (l.tax_treatment && l.tax_treatment !== "taxable") ||
+          (l.tax_bps === 0 &&
+            (!l.tax_components ||
+              l.tax_components.every((c) => c.rate_milli_percent === 0))),
+      ),
     400,
     "Enable taxes in Settings before adding a tax rate",
   );
@@ -261,7 +434,13 @@ export async function saveDraft(
       l.kind === "time" ? l.source_ids : [],
     ),
     sources = await lockSources(db, sourceIds, input.client_id, id),
-    lines = input.lines.map((l) => workLine(l, sources));
+    charges = await lockCharges(
+      db,
+      input.lines.flatMap((l) => (l.kind === "charge" ? [l.charge_id] : [])),
+      input.client_id,
+      id,
+    ),
+    lines = input.lines.map((l) => workLine(l, sources, charges));
   const totals = {
     subtotal_minor: 0,
     discount_minor: 0,
@@ -307,6 +486,7 @@ export async function saveDraft(
       ],
     );
   else {
+    await db.query("DELETE FROM charge_allocation WHERE invoice_id=$1", [id]);
     await db.query("DELETE FROM invoice_allocation WHERE invoice_id=$1", [id]);
     await db.query("DELETE FROM invoice_line WHERE invoice_id=$1", [id]);
     await db.query(
@@ -330,7 +510,7 @@ export async function saveDraft(
   }
   for (const [position, l] of lines.entries()) {
     await db.query(
-      "INSERT INTO invoice_line(id,invoice_id,position,kind,description,quantity,unit_minor,discount_bps,tax_bps,tax_label,subtotal_minor,discount_minor,tax_minor,total_minor,original_seconds,billable_seconds,source_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+      "INSERT INTO invoice_line(id,invoice_id,position,kind,description,quantity,unit_minor,discount_bps,tax_bps,tax_label,subtotal_minor,discount_minor,tax_minor,total_minor,original_seconds,billable_seconds,source_snapshot,tax_snapshot,tax_treatment,charge_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)",
       [
         l.id,
         id,
@@ -349,8 +529,16 @@ export async function saveDraft(
         l.original_seconds,
         l.billable_seconds,
         JSON.stringify(l.source_snapshot),
+        JSON.stringify(l.tax_snapshot || []),
+        l.tax_treatment || "taxable",
+        JSON.stringify(l.charge_snapshot || []),
       ],
     );
+    for (const c of l.charge_snapshot || [])
+      await db.query(
+        "INSERT INTO charge_allocation(id,invoice_id,line_id,charge_id,allocated_minor) VALUES($1,$2,$3,$4,$5)",
+        [randomUUID(), id, l.id, c.id, c.amount_minor],
+      );
     for (const s of l.source_snapshot)
       await db.query(
         "INSERT INTO invoice_allocation(id,invoice_id,line_id,time_entry_id,allocated_seconds) VALUES($1,$2,$3,$4,$5)",
@@ -549,7 +737,7 @@ export async function recordPayment(
       const net = Number(
         (
           await db.query(
-            "SELECT COALESCE(sum(CASE WHEN kind='receipt' THEN amount_minor ELSE -amount_minor END),0) AS net FROM payment WHERE invoice_id=$1",
+            "SELECT total_minor-balance_minor AS net FROM invoice_financials WHERE id=$1",
             [id],
           )
         ).rows[0].net,
@@ -620,8 +808,19 @@ export async function reversePayment(
     }),
   );
 }
+async function lockSourceQuote(db: PoolClient, invoiceId: string) {
+  const link = (
+    await db.query("SELECT source_quote_id FROM invoice WHERE id=$1", [
+      invoiceId,
+    ])
+  ).rows[0]?.source_quote_id;
+  if (link)
+    await db.query("SELECT id FROM quote WHERE id=$1 FOR UPDATE", [link]);
+  return link as string | undefined;
+}
 export async function voidInvoice(id: string, version: number, reason: string) {
   return transaction(async (db) => {
+    const sourceQuote = await lockSourceQuote(db, id);
     const i = (
       await db.query(
         "SELECT state,version FROM invoice WHERE id=$1 FOR UPDATE",
@@ -636,7 +835,7 @@ export async function voidInvoice(id: string, version: number, reason: string) {
     const net = Number(
       (
         await db.query(
-          "SELECT COALESCE(sum(CASE WHEN kind='receipt' THEN amount_minor ELSE -amount_minor END),0) AS net FROM payment WHERE invoice_id=$1",
+          "SELECT net_cash_minor AS net FROM invoice_financials WHERE id=$1",
           [id],
         )
       ).rows[0].net,
@@ -651,11 +850,17 @@ export async function voidInvoice(id: string, version: number, reason: string) {
       [reason, id],
     );
     await invoiceEvent(db, id, "voided", reason);
+    if (sourceQuote)
+      await db.query(
+        "INSERT INTO quote_event(id,quote_id,type,summary) VALUES($1,$2,'invoice_voided','Linked invoice voided; a replacement may be created without altering the original.')",
+        [randomUUID(), sourceQuote],
+      );
     return { id };
   });
 }
 export async function archiveDraft(id: string, version: number) {
   return transaction(async (db) => {
+    const sourceQuote = await lockSourceQuote(db, id);
     const i = (
       await db.query(
         "SELECT state,version FROM invoice WHERE id=$1 FOR UPDATE",
@@ -667,11 +872,17 @@ export async function archiveDraft(id: string, version: number) {
       409,
       "Only an unchanged draft can be discarded",
     );
+    await db.query("DELETE FROM charge_allocation WHERE invoice_id=$1", [id]);
     await db.query("DELETE FROM invoice_allocation WHERE invoice_id=$1", [id]);
     await db.query(
       "UPDATE invoice SET archived_at=now(),version=version+1 WHERE id=$1",
       [id],
     );
+    if (sourceQuote)
+      await db.query(
+        "INSERT INTO quote_event(id,quote_id,type,summary) VALUES($1,$2,'invoice_draft_discarded','Linked invoice draft discarded; a replacement may be created.')",
+        [randomUUID(), sourceQuote],
+      );
     await invoiceEvent(
       db,
       id,

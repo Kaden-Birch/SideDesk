@@ -1,3 +1,4 @@
+import { smtpFixture } from "./smtp-fixture";
 import EmbeddedPostgres from "embedded-postgres";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp } from "node:fs/promises";
@@ -31,6 +32,8 @@ const { migrate } = await import("./migrate");
 await migrate();
 const { pool } = await import("../lib/db");
 await pool().end();
+const smtp = await smtpFixture(root);
+Object.assign(process.env, smtp.env);
 const children = [
   spawn(process.execPath, [".next/standalone/server.js"], {
     stdio: "inherit",
@@ -51,6 +54,7 @@ async function stop() {
   if (stopping) return;
   stopping = true;
   children.forEach((c) => c.kill("SIGTERM"));
+  await new Promise<void>((resolve) => smtp.server.close(resolve));
   await pg.stop();
   process.exit(0);
 }

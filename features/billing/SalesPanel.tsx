@@ -135,6 +135,12 @@ export default function SalesPanel({
           {error}
         </p>
       )}
+      <div className="actions">
+        <button onClick={() => onNavigate("quotes")}>Quotes</button>
+        <button onClick={() => onNavigate("expenses", "charges")}>
+          Expense / travel charges
+        </button>
+      </div>
       <div className="tabs" role="tablist" aria-label="Sales sections">
         {[
           ["invoices", "Invoices"],
@@ -178,8 +184,11 @@ export default function SalesPanel({
                 "all",
                 "draft",
                 "issued",
+                "sent",
                 "partially_paid",
                 "paid",
+                "settled",
+                "refund_due",
                 "overdue",
                 "void",
               ].map((s) => (
@@ -510,6 +519,9 @@ export function ClientBillingLinks({
   clientId: string;
   onNavigate: (v: string, id?: string) => void;
 }) {
+  const [quotes, setQuotes] = useState<
+    { id: string; client_id: string; number: string | null; status: string }[]
+  >([]);
   const [jobs, setJobs] = useState<Job[]>([]),
     [invoices, setInvoices] = useState<InvoiceRow[]>([]),
     [error, setError] = useState("");
@@ -517,8 +529,17 @@ export function ClientBillingLinks({
     void Promise.all([
       request<Job[]>("jobs"),
       request<InvoiceRow[]>("invoices"),
+      request<
+        {
+          id: string;
+          client_id: string;
+          number: string | null;
+          status: string;
+        }[]
+      >("quotes"),
     ])
-      .then(([j, i]) => {
+      .then(([j, i, q]) => {
+        setQuotes(q.filter((x) => x.client_id === clientId));
         setJobs(j.filter((x) => x.client_id === clientId));
         setInvoices(i.filter((x) => x.client_id === clientId));
       })
@@ -526,7 +547,7 @@ export function ClientBillingLinks({
   }, [clientId]);
   return (
     <section className="card">
-      <h2>Jobs & invoices</h2>
+      <h2>Jobs, quotes & invoices</h2>
       {error && <p role="alert">{error}</p>}
       {jobs.map((j) => (
         <p key={j.id}>
@@ -543,8 +564,15 @@ export function ClientBillingLinks({
           </button>
         </p>
       ))}
-      {!jobs.length && !invoices.length && (
-        <p className="muted">No structured jobs or invoices yet.</p>
+      {quotes.map((q) => (
+        <p key={q.id}>
+          <button className="link" onClick={() => onNavigate("quotes", q.id)}>
+            {q.number || "Draft quote"} · {q.status}
+          </button>
+        </p>
+      ))}
+      {!jobs.length && !invoices.length && !quotes.length && (
+        <p className="muted">No structured jobs, quotes or invoices yet.</p>
       )}
     </section>
   );
@@ -555,8 +583,9 @@ export function BillingOverview({
   onNavigate: (v: string, id?: string) => void;
 }) {
   const [summary, setSummary] = useState<{
-      received_month_minor: number;
-      outstanding_minor: number;
+      received_month_minor: number | string;
+      outstanding_minor: number | string;
+      customer_credit_minor: number | string;
       unbilled_seconds: number;
     } | null>(null),
     [error, setError] = useState("");
@@ -575,14 +604,18 @@ export function BillingOverview({
   return (
     <div className="metrics">
       <div>
-        <span>Cash received this month</span>
+        <span>Net cash received this month</span>
         <strong>{money(summary.received_month_minor)}</strong>
-        <small>Receipts less corrections, CAD</small>
+        <small>Receipts less refunds and corrections, CAD</small>
       </div>
       <div>
         <span>Outstanding invoices</span>
         <strong>{money(summary.outstanding_minor)}</strong>
         <small>Issued balance, excludes voids and drafts</small>
+        <small>
+          Customer credit refundable:{" "}
+          {money(summary.customer_credit_minor || 0)}
+        </small>
       </div>
       <div>
         <span>Unbilled recorded time</span>
