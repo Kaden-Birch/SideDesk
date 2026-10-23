@@ -706,7 +706,11 @@ export default function SideDesk() {
             <button
               onClick={lockAll}
               title="Lock vault in all tabs"
-              aria-label="Lock vault in all tabs"
+              aria-label={
+                vaultUnlocked
+                  ? "Lock vault in all tabs"
+                  : "Vault locked; lock all tabs"
+              }
             >
               {vaultUnlocked ? "Lock vault" : "Vault locked"}
             </button>
